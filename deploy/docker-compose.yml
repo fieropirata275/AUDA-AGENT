@@ -1,0 +1,21 @@
+# docker compose -f deploy/docker-compose.yml up -d
+services:
+  auda:
+    build: { context: .., dockerfile: deploy/Dockerfile }
+    image: auda:latest
+    restart: unless-stopped
+    ports: ["4610:4610"]
+    volumes: ["auda-data:/data"]
+    environment:
+      AUDA_PUBLIC_URL: ${AUDA_PUBLIC_URL:-http://localhost:4610}
+      # Require a token for the UI/API (strongly recommended beyond localhost):
+      AUDA_TOKEN: ${AUDA_TOKEN:-}
+      # Optional: a stable master key for the secret store (otherwise generated into /data).
+      AUDA_MASTER_KEY: ${AUDA_MASTER_KEY:-}
+      # Optional: Claude for open-ended work. Can also be connected in the UI.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    shm_size: "512m"   # Chromium needs more than the default 64 MB
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+volumes:
+  auda-data:

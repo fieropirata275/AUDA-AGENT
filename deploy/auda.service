@@ -1,0 +1,23 @@
+# systemd unit for a bare-metal / VM install (no Docker).
+#   sudo cp deploy/auda.service /etc/systemd/system/ && sudo systemctl enable --now auda
+[Unit]
+Description=AUDA — always-on digital operator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=auda
+WorkingDirectory=/opt/auda
+Environment=NODE_ENV=production
+Environment=AUDA_DATA=/var/lib/auda
+EnvironmentFile=-/etc/auda.env
+ExecStart=/usr/bin/node --import tsx server/src/bin/auda.ts
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/auda
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

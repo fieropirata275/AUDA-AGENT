@@ -1,0 +1,234 @@
+# AUDA — Architecture
+
+> AUDA is a digital operator that lives alongside the user, keeps working when the
+> conversation ends, remembers what matters, notices relevant changes, decides what
+> to do next within its permissions, and comes back when human judgment is needed.
+
+This document is the foundation the code is built on. It covers, in order:
+architecture, the application state model, the task and responsibility lifecycles,
+the database schema, the event model, the permission model, the design system,
+the motion system and AUDA's visual identity.
+
+---
+
+## 1. Architecture
+
+AUDA is a **modular monolith**: one Node.js process (`server/src/index.ts`) with hard
+module boundaries, plus an outer process supervisor (`server/src/bin/auda.ts`) that
+restarts the core if it dies. Nothing important lives only in memory: every
+responsibility, task, step, schedule, approval and checkpoint is in SQLite (WAL mode),
+so a restart resumes work rather than losing it.
+
+```
+                ┌───────────────────────────── clients ─────────────────────────────┐
+                │  Web app (React)   ·   Device link (auda-link)   ·   Webhooks/API  │
+                └──────────────┬──────────────────────┬──────────────────┬──────────┘
+                               │ REST + WebSocket      │ WS               │ HTTP
+┌──────────────────────────────▼──────────────────────▼──────────────────▼──────────┐
+│ Gateway  (gateway/)      REST API · realtime fan-out · inbound hooks · static UI  │
+├───────────────────────────────────────────────────────────────────────────────────┤
+│ Agent Core (agent/)      chat → persistent state · intent compiler · agent loop   │
+│ Responsibilities         long-lived goals; spawn tasks when woken                 │
+│ Durable Task Engine      leases · checkpoints · retries/backoff · resumable steps │
+│ Scheduler                cron · once · interval · fuzzy windows · deadlines       │
+│ Watchers                 cheap edge-triggered probes; wake responsibilities       │
+│ Event Bus                persisted events + in-process subscribers                │
+│ Memory Service           typed memory · FTS retrieval · consolidation · expiry    │
+│ Policy Engine            capabilities · rules · approvals · quiet hours · budgets │
+│ Tool Broker              the only path to side effects; idempotency + audit       │
+│ Connector Runtime        GitHub · Webhooks · AUDA's computer · linked devices     │
+│ Computer Runtime         persistent workspace: terminal · filesystem · Chromium   │
+│ Model Router             reasoning / utility / vision / coding / fallback roles   │
+│ Notifications            importance levels, quiet hours, no spam                  │
+│ Artifact Store           files with a "why" and an owner task                      │
+│ Audit Log                every external mutation, with policy decision            │
+├───────────────────────────────────────────────────────────────────────────────────┤
+│ Supervisor (supervisor/) independent loop: dead leases, browser health, stuck     │
+│                          tasks, circuit breakers, recovery records                │
+├───────────────────────────────────────────────────────────────────────────────────┤
+│ SQLite (data/auda.db) · Secret store (data/secrets, AES-256-GCM) · Workspace dir  │
+└───────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Rules of the boundaries**
+
+* Only the **Tool Broker** performs side effects. Playbooks and the agent loop ask the
+  broker for a *capability* (`terminal.exec`, `fs.delete`, `github.rerun_workflow`…).
+  The broker asks the **Policy Engine**, records an **Audit** entry, deduplicates through
+  the **actions** table (idempotency keys) and only then calls the connector/runtime.
+* Models never see credentials. Connectors fetch secrets from the **Secret Broker** at
+  call time; models only see capability names and results.
+* Modules talk through the **Event Bus** for anything asynchronous (an approval granted
+  wakes a task; a watcher firing wakes a responsibility). Direct calls are used only for
+  synchronous queries.
+* The UI is a projection. The realtime layer pushes entity upserts; the client never
+  invents state.
+
+**Deployment target.** Proxmox host → Ubuntu VM → `docker compose` (AUDA core + AUDA's
+computer container) with persistent volumes. See `deploy/`. The computer runtime has
+drivers: `local` (a sandboxed workspace directory — development), `docker` (a long-lived
+container AUDA execs into) and `ssh` (a dedicated VM). The browser is a persistent
+Chromium profile inside that environment.
+
+---
+
+## 2. Application state model
+
+AUDA is one entity with continuous state:
+
+| Concept | What it is | Lives in |
+|---|---|---|
+| Identity | name, presence, current narration | `identity` |
+| Presence | derived: `available · thinking · working · browsing · coding · waiting · watching · scheduled · needs_you · blocked · idle · recovering` | computed from tasks/approvals/supervisor |
+| Responsibility | an ongoing goal that stays alive | `responsibilities` |
+| Task | finite unit of work, possibly spawned by a responsibility | `tasks`, `task_steps`, `task_runs` |
+| Schedule / Trigger / Watcher | how AUDA wakes up | `schedules`, `triggers`, `watchers` |
+| Memory | typed, scoped understanding | `memories` (+ FTS) |
+| Approval | a specific decision only the human can make | `approvals` |
+| Rule | natural-language policy compiled to structure | `rules` |
+| Connector / Device | pieces of AUDA's environment | `connectors`, `devices` |
+| Computer | AUDA's persistent desk | `computers`, `computer_sessions` |
+
+**Presence derivation** (highest wins): `recovering` (supervisor repairing) → `needs_you`
+(pending approval) → `blocked` → `browsing`/`coding`/`working` (a RUNNING task; the
+running step's tool decides the flavour) → `thinking` (model call in flight) →
+`waiting` (WAITING_EXTERNAL tasks) → `watching` (active responsibilities) →
+`scheduled` (only future work) → `available` → `idle` (nothing at all for 30 min).
+
+---
+
+## 3. Task lifecycle
+
+```
+DRAFT → PLANNING → READY → RUNNING ─┬─→ COMPLETED
+                     ▲      │       ├─→ WAITING_USER ──(approval)──→ READY
+                     │      │       ├─→ WAITING_EXTERNAL ─(event/time)→ READY
+                     │      │       ├─→ SCHEDULED ──(time)──→ READY
+                     │      │       ├─→ RETRYING ──(backoff)──→ READY
+                     │      │       ├─→ FAILED (after max retries / unrecoverable)
+                     │      │       └─→ PAUSED ──(resume)──→ READY
+                     │      └─(lease lost / crash)─→ RECOVERING ─→ READY
+                     └──────────────── CANCELLED (from any non-terminal state)
+```
+
+* A task owns a **plan** (ordered steps). Each step is executed at most once
+  successfully; the step index and step outputs are the **checkpoint**.
+* A worker **claims** a READY task by atomic state change, opens a `task_run` with a
+  30-second **lease** and heartbeats every 5s. If the process dies, the supervisor sees
+  the expired lease, records a recovery, and moves the task `RECOVERING → READY`. The
+  next worker resumes from `current_step`.
+* Side-effecting steps carry an **idempotency key** (`task:step:capability:hash`).
+  The broker refuses to repeat an action already marked `done` and returns the stored
+  result instead, so a retry can never send the same email or delete twice.
+* Progress is honest: we show `3 of 7 known steps`, never invented percentages.
+
+## 4. Responsibility lifecycle
+
+```
+DRAFT ──activate──→ WATCHING ──trigger──→ HANDLING ──task done──→ WATCHING
+                       │  ▲                  │
+                       │  └──── approved ────┤──→ NEEDS_USER (task waits for you)
+                       ├──pause──→ PAUSED ──resume──→ WATCHING
+                       └──stop───→ ENDED
+```
+
+A responsibility owns its wake-up sources (watchers, schedules, triggers) and spawns
+tasks through its **playbook**. When the task finishes, the responsibility records
+`last_outcome`, updates operational memory and returns to WATCHING. It never ends just
+because a task ended.
+
+---
+
+## 5. Database schema
+
+See `server/src/core/schema.sql` (authoritative). Entities: `identity, spaces,
+conversations, messages, responsibilities, tasks, task_runs, task_steps, schedules,
+triggers, watchers, events, activity, memories (+memories_fts), artifacts, connectors,
+secrets, permissions, rules, approvals, computers, computer_sessions, notifications,
+audit_log, actions, model_calls, settings, devices`.
+
+Relationships: a Space scopes conversations, responsibilities, tasks, memories,
+artifacts, rules and permission overrides. A Responsibility has many Watchers,
+Schedules, Triggers and Tasks. A Task has Steps, Runs, Approvals, Artifacts and
+Activity. Approvals point at a specific Step and capability. Audit entries and actions
+point at the task/step that caused them.
+
+---
+
+## 6. Event model
+
+Events are persisted in `events` and dispatched in-process. Types:
+
+```
+task.created  task.started  task.step.completed  task.waiting  task.resumed
+task.completed  task.failed  task.recovering  task.cancelled
+responsibility.created  responsibility.triggered  responsibility.updated
+approval.requested  approval.granted  approval.rejected
+watcher.fired  watcher.error  schedule.fired
+connector.webhook.received  connector.github.workflow_failed  connector.state
+computer.session.started  computer.session.crashed  computer.session.recovered
+computer.control.changed
+memory.created  memory.updated  memory.consolidated
+rule.activated  notification.created  presence.changed
+```
+
+Triggers subscribe responsibilities to event patterns (`connector.webhook.received`
+with `{slug:"deploys"}`), so a webhook wakes exactly the responsibility that cares.
+
+---
+
+## 7. Permission model
+
+Every tool is a **capability** with a default level:
+
+| Level | Meaning | Examples |
+|---|---|---|
+| `autonomous` | do it, record it | read files, `terminal.exec` (read-only commands), browse, research, write own reports |
+| `rule` | allowed when an active rule matches; otherwise ask | restart a container, compress logs, archive newsletters |
+| `approval` | always pause with a specific approval card | delete outside scratch, send externally, spend money, push to main, privilege changes |
+| `deny` | never | as set by rules ("Never spend money") |
+
+Evaluation order: explicit **deny rules** → **allow rules** (scope, resource glob,
+time window, budget) → **permission overrides** (per space/connector) → capability
+default. Quiet-hours and budget rules are conditions on rules. Every decision is
+written into the audit log with the rule that produced it.
+
+Rules are written in natural language, compiled to structure
+(`{effect, capabilities, resource, conditions}`), shown back as an interpretation, and
+only become active after the user confirms.
+
+---
+
+## 8. Design system — modern skeuomorphism
+
+Material cues, not cosplay. Surfaces are a warm ceramic in light mode and graphite in
+dark mode. Hierarchy comes from **elevation**: `well` (inset, −1), `surface` (0),
+`raised` (+1, cards), `lifted` (+2, being manipulated), `floating` (+3, sheets).
+Each level is a pair of shadows (ambient + contact) plus a 1px top edge highlight.
+One restrained accent (ember). Semantic colors are muted and few: *attention*
+(amber), *settled* (sage), *problem* (clay). Personality comes from shape and motion.
+Typography: Instrument Sans (UI), Instrument Serif (AUDA's voice / large headings),
+JetBrains Mono (raw logs only). Tokens live in `web/src/design/tokens.css`.
+
+## 9. Motion system
+
+* One spring solver (`web/src/motion/spring.ts`) used for glyphs; `motion` springs for
+  layout. Presets: `snap` (micro, ~160ms), `settle` (~280ms), `glide` (~450ms),
+  `expressive` (~650ms).
+* **Stroke-morph icons**: every status icon is the same structure — three centerline
+  strokes of 24 points with round caps. A dot is a stroke of zero length. Morphing
+  any icon to any other is per-point interpolation, so *dots → waveform → orbit →
+  check*, *clock → progress → tick*, *plug → linked* are continuous.
+* Elements lift 1–2px when AUDA starts work on them, settle into the surface when
+  inactive, and physically depress when pressed.
+
+## 10. AUDA's visual identity — the Aperture
+
+AUDA's glyph is a three-layer fluid aperture: three closed polar curves
+`r(θ) = R · (1 + Σ aₖ·sin(kθ + φₖ(t)))` rendered as a lens. Every presence state is a set
+of parameter targets (radius, harmonic amplitudes, rotation speed, layer separation,
+breathing rate). Springs drive the parameters, so state changes are always continuous
+morphs, never icon swaps. Idle breathes; listening expands; thinking reorganises its
+inner harmonics; working orbits; waiting slows and settles; needs-you pulses softly;
+completion briefly resolves into a perfect circle; trouble deforms gracefully and
+exposes a notch — never red shaking.

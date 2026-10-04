@@ -1,0 +1,158 @@
+/*
+ * AUDA design tokens — modern skeuomorphism.
+ * Warm ceramic (light) and graphite (dark). Depth = hierarchy.
+ * Elevation levels: well (-1) · surface (0) · raised (+1) · lifted (+2) · floating (+3)
+ */
+:root {
+  color-scheme: light;
+  --font-ui: 'Instrument Sans Variable', 'Instrument Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-voice: 'Instrument Serif', ui-serif, Georgia, serif;
+  --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* Surfaces */
+  --bg: #ebe7e0;
+  --bg-grain: #e6e1d9;
+  --surface: #f1eee8;
+  --raised: #f7f5f1;
+  --raised-2: #fbfaf7;
+  --well: #e2ddd5;
+  --well-deep: #d9d3ca;
+  --glass: rgba(247, 245, 241, 0.82);
+
+  /* Ink */
+  --ink: #23201c;
+  --ink-2: #57514a;
+  --ink-3: #8a8379;
+  --ink-4: #b2aba1;
+  --line: rgba(60, 46, 32, 0.1);
+  --line-strong: rgba(60, 46, 32, 0.18);
+
+  /* One accent, three semantic tones */
+  --accent: #c25e2c;
+  --accent-2: #dd7a45;
+  --accent-soft: rgba(194, 94, 44, 0.12);
+  --accent-ink: #fffaf5;
+  --attention: #b8821f;
+  --attention-soft: rgba(184, 130, 31, 0.13);
+  --settled: #5f7f5c;
+  --settled-soft: rgba(95, 127, 92, 0.13);
+  --problem: #a8503b;
+  --problem-soft: rgba(168, 80, 59, 0.12);
+
+  /* Light & shadow — every level is ambient + contact + edge highlight */
+  --edge-hi: rgba(255, 255, 255, 0.85);
+  --edge-lo: rgba(60, 40, 20, 0.06);
+  --shadow-raised: 0 1px 0 var(--edge-hi) inset, 0 0 0 1px rgba(60, 40, 20, 0.05), 0 1px 2px rgba(60, 40, 20, 0.07), 0 6px 18px -8px rgba(60, 40, 20, 0.18);
+  --shadow-lifted: 0 1px 0 var(--edge-hi) inset, 0 0 0 1px rgba(60, 40, 20, 0.06), 0 2px 4px rgba(60, 40, 20, 0.08), 0 14px 30px -12px rgba(60, 40, 20, 0.28);
+  --shadow-floating: 0 1px 0 var(--edge-hi) inset, 0 0 0 1px rgba(60, 40, 20, 0.07), 0 8px 16px -6px rgba(60, 40, 20, 0.14), 0 32px 64px -24px rgba(60, 40, 20, 0.34);
+  --shadow-well: inset 0 1px 2px rgba(60, 40, 20, 0.12), inset 0 0 0 1px rgba(60, 40, 20, 0.05), 0 1px 0 var(--edge-hi);
+  --shadow-pressed: inset 0 2px 3px rgba(60, 40, 20, 0.16), inset 0 0 0 1px rgba(60, 40, 20, 0.06);
+  --shadow-knob: 0 1px 0 rgba(255, 255, 255, 0.95) inset, 0 -1px 0 rgba(60, 40, 20, 0.08) inset, 0 1px 2px rgba(60, 40, 20, 0.2), 0 3px 8px -2px rgba(60, 40, 20, 0.22);
+  --ceramic: linear-gradient(180deg, #fbfaf7 0%, #f3f0ea 100%);
+  --metal: linear-gradient(180deg, #fdfcfa 0%, #e9e5de 55%, #dfdad2 100%);
+  --ember: linear-gradient(180deg, #d77443 0%, #bd5727 100%);
+
+  /* Geometry */
+  --r-xs: 6px;
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 20px;
+  --r-xl: 28px;
+  --gutter: 28px;
+  --rail: 236px;
+
+  /* Glyph material */
+  --glyph-a: #f3b48a;
+  --glyph-b: #c9602d;
+  --glyph-c: #6e2f17;
+  --glyph-core: #2a211b;
+  --glyph-ring: rgba(60, 40, 20, 0.12);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --bg: #151413;
+    --bg-grain: #121110;
+    --surface: #1b1a18;
+    --raised: #23211e;
+    --raised-2: #2a2824;
+    --well: #11100f;
+    --well-deep: #0c0b0a;
+    --glass: rgba(35, 33, 30, 0.82);
+    --ink: #eee9e1;
+    --ink-2: #b9b2a7;
+    --ink-3: #847d73;
+    --ink-4: #5b554e;
+    --line: rgba(255, 245, 230, 0.08);
+    --line-strong: rgba(255, 245, 230, 0.14);
+    --accent: #e0773f;
+    --accent-2: #f08f58;
+    --accent-soft: rgba(224, 119, 63, 0.16);
+    --attention: #d9a441;
+    --attention-soft: rgba(217, 164, 65, 0.15);
+    --settled: #8bab84;
+    --settled-soft: rgba(139, 171, 132, 0.14);
+    --problem: #d47a62;
+    --problem-soft: rgba(212, 122, 98, 0.14);
+    --edge-hi: rgba(255, 250, 240, 0.07);
+    --edge-lo: rgba(0, 0, 0, 0.4);
+    --shadow-raised: 0 1px 0 var(--edge-hi) inset, 0 0 0 1px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 20px -10px rgba(0, 0, 0, 0.7);
+    --shadow-lifted: 0 1px 0 var(--edge-hi) inset, 0 0 0 1px rgba(0, 0, 0, 0.4), 0 2px 4px rgba(0, 0, 0, 0.45), 0 18px 36px -14px rgba(0, 0, 0, 0.8);
+    --shadow-floating: 0 1px 0 var(--edge-hi) inset, 0 0 0 1px rgba(0, 0, 0, 0.45), 0 10px 20px -8px rgba(0, 0, 0, 0.5), 0 40px 80px -30px rgba(0, 0, 0, 0.9);
+    --shadow-well: inset 0 1px 3px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(0, 0, 0, 0.4), 0 1px 0 var(--edge-hi);
+    --shadow-pressed: inset 0 2px 4px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(0, 0, 0, 0.4);
+    --shadow-knob: 0 1px 0 rgba(255, 250, 240, 0.12) inset, 0 -1px 0 rgba(0, 0, 0, 0.3) inset, 0 1px 2px rgba(0, 0, 0, 0.6), 0 3px 8px -2px rgba(0, 0, 0, 0.6);
+    --ceramic: linear-gradient(180deg, #282622 0%, #211f1c 100%);
+    --metal: linear-gradient(180deg, #3a3732 0%, #2b2925 60%, #25231f 100%);
+    --ember: linear-gradient(180deg, #e88050 0%, #c95f2c 100%);
+    --glyph-a: #f6be95;
+    --glyph-b: #d9692f;
+    --glyph-c: #7a3417;
+    --glyph-core: #0e0c0b;
+    --glyph-ring: rgba(255, 240, 220, 0.08);
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #151413;
+  --bg-grain: #121110;
+  --surface: #1b1a18;
+  --raised: #23211e;
+  --raised-2: #2a2824;
+  --well: #11100f;
+  --well-deep: #0c0b0a;
+  --glass: rgba(35, 33, 30, 0.82);
+  --ink: #eee9e1;
+  --ink-2: #b9b2a7;
+  --ink-3: #847d73;
+  --ink-4: #5b554e;
+  --line: rgba(255, 245, 230, 0.08);
+  --line-strong: rgba(255, 245, 230, 0.14);
+  --accent: #e0773f;
+  --accent-2: #f08f58;
+  --accent-soft: rgba(224, 119, 63, 0.16);
+  --attention: #d9a441;
+  --attention-soft: rgba(217, 164, 65, 0.15);
+  --settled: #8bab84;
+  --settled-soft: rgba(139, 171, 132, 0.14);
+  --problem: #d47a62;
+  --problem-soft: rgba(212, 122, 98, 0.14);
+  --edge-hi: rgba(255, 250, 240, 0.07);
+  --edge-lo: rgba(0, 0, 0, 0.4);
+  --shadow-raised: 0 1px 0 var(--edge-hi) inset, 0 0 0 1px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 20px -10px rgba(0, 0, 0, 0.7);
+  --shadow-lifted: 0 1px 0 var(--edge-hi) inset, 0 0 0 1px rgba(0, 0, 0, 0.4), 0 2px 4px rgba(0, 0, 0, 0.45), 0 18px 36px -14px rgba(0, 0, 0, 0.8);
+  --shadow-floating: 0 1px 0 var(--edge-hi) inset, 0 0 0 1px rgba(0, 0, 0, 0.45), 0 10px 20px -8px rgba(0, 0, 0, 0.5), 0 40px 80px -30px rgba(0, 0, 0, 0.9);
+  --shadow-well: inset 0 1px 3px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(0, 0, 0, 0.4), 0 1px 0 var(--edge-hi);
+  --shadow-pressed: inset 0 2px 4px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(0, 0, 0, 0.4);
+  --shadow-knob: 0 1px 0 rgba(255, 250, 240, 0.12) inset, 0 -1px 0 rgba(0, 0, 0, 0.3) inset, 0 1px 2px rgba(0, 0, 0, 0.6), 0 3px 8px -2px rgba(0, 0, 0, 0.6);
+  --ceramic: linear-gradient(180deg, #282622 0%, #211f1c 100%);
+  --metal: linear-gradient(180deg, #3a3732 0%, #2b2925 60%, #25231f 100%);
+  --ember: linear-gradient(180deg, #e88050 0%, #c95f2c 100%);
+  --glyph-a: #f6be95;
+  --glyph-b: #d9692f;
+  --glyph-c: #7a3417;
+  --glyph-core: #0e0c0b;
+  --glyph-ring: rgba(255, 240, 220, 0.08);
+}
