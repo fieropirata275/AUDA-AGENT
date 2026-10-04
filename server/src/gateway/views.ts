@@ -62,7 +62,16 @@ export const connectorView = (c: Row) => {
 };
 export const ruleView = (r: Row) => ({ id: r.id, text: r.text, compiled: json(r.compiled_json, {}), interpretation: r.interpretation, state: r.state, spaceId: r.space_id, origin: r.origin, createdAt: r.created_at, activatedAt: r.activated_at, hits: q.get('SELECT COUNT(*) n FROM audit_log WHERE decision = ?', `rule:${r.id}`)!.n });
 export const notificationView = (n: Row) => ({ id: n.id, level: n.level, title: n.title, body: n.body, subjectType: n.subject_type, subjectId: n.subject_id, delivered: !!n.delivered, suppressedReason: n.suppressed_reason, readAt: n.read_at, createdAt: n.created_at });
-export const messageView = (m: Row) => ({ id: m.id, conversationId: m.conversation_id, role: m.role, content: m.content, objects: json(m.objects_json, []), channel: m.channel, createdAt: m.created_at });
+export const messageView = (m: Row) => {
+  const t = m.author_type === 'agent' && m.author_id ? q.get('SELECT id, title, depth, state FROM tasks WHERE id = ?', m.author_id) : null;
+  return {
+    id: m.id, conversationId: m.conversation_id, role: m.role, content: m.content, objects: json(m.objects_json, []), channel: m.channel, createdAt: m.created_at,
+    authorType: m.author_type || (m.role === 'user' ? 'user' : 'auda'), authorId: m.author_id, attachments: json(m.attachments_json, []),
+    authorName: t ? `${t.depth ? 'Sub-agent' : 'Agent'} · ${t.title.length > 34 ? t.title.slice(0, 32) + '…' : t.title}` : m.role === 'user' ? 'You' : 'AUDA', authorState: t?.state ?? null,
+  };
+};
+export const pairingView = (p: Row) => ({ id: p.id, name: p.name, platform: p.platform, code: p.code, state: p.state, createdAt: p.created_at, expiresAt: p.expires_at });
+export const clientView = (c: Row) => ({ id: c.id, name: c.name, platform: c.platform, createdAt: c.created_at, lastSeenAt: c.last_seen_at, revokedAt: c.revoked_at });
 export const deviceView = (d: Row) => ({ id: d.id, name: d.name, state: d.state, platform: d.platform, grants: json(d.capabilities_json, {}), lastSeenAt: d.last_seen_at, createdAt: d.created_at, revokedAt: d.revoked_at });
 export const identityView = (i: Row) => ({ id: i.id, name: i.name, userName: i.user_name, presence: i.presence, narration: i.narration, subject: i.presence_subject, updatedAt: i.updated_at });
 
@@ -76,6 +85,8 @@ export function settingsView() {
     spend: spend(),
     capabilities: Object.values(capabilities).map((c) => ({ id: c.id, title: c.title, group: c.group, risk: c.risk, default: c.level, level: effectiveLevel(c.id) })),
     concurrency: getSetting('engine.concurrency', 3),
+    instanceName: getSetting('instance.name', ''),
+    requirePairing: getSetting('security.requirePairing', false),
     agentVerify: getSetting('agent.verify', true),
     agentWebSearch: getSetting('agent.webSearch', true),
   };
@@ -100,6 +111,8 @@ const loaders: Partial<Record<Entity, (id: string) => any>> = {
   schedule: (id) => { const r = q.get('SELECT * FROM schedules WHERE id = ?', id); return r && scheduleView(r); },
   watcher: (id) => { const r = q.get('SELECT * FROM watchers WHERE id = ?', id); return r && watcherView(r); },
   settings: () => settingsView(),
+  pairing: (id) => { const r = q.get('SELECT * FROM pairings WHERE id = ?', id); return r && pairingView(r); },
+  client: (id) => { const r = q.get('SELECT * FROM clients WHERE id = ?', id); return r && clientView(r); },
 };
 
 export function load(entity: Entity, id: string) { return loaders[entity]?.(id); }

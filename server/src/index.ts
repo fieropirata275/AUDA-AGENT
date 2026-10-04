@@ -17,6 +17,9 @@ import { startSupervisor } from './supervisor/supervisor.ts';
 import { initPresence } from './agent/presence.ts';
 import { consolidate } from './memory/consolidate.ts';
 import { createServer } from './gateway/http.ts';
+import { initLmStudio } from './connectors/lmstudio.ts';
+import { initGroup } from './agent/group.ts';
+import { startDiscovery, stopDiscovery, lanAddresses } from './gateway/discovery.ts';
 import { replayPending, pruneEvents } from './core/bus.ts';
 import { backup, bootReport } from './core/db.ts';
 import { system } from './core/system.ts';
@@ -56,6 +59,8 @@ ensureConnector('anthropic', 'Claude (Anthropic)', providerReady({ provider: 'an
   process.env.ANTHROPIC_API_KEY ? 'Using ANTHROPIC_API_KEY from the environment' : undefined);
 initGitHub();
 initDevices();
+initLmStudio();
+initGroup();
 registerTool('notify.user', async (i) => ({ id: notify(i.level ?? 'fyi', i.title, i.body) }));
 initResponsibilities();
 initPresence();
@@ -81,7 +86,8 @@ onNarration(() => {});
 const server = createServer();
 attachRealtime(server);
 server.listen(config.port, config.host, () => {
-  log.info(`AUDA ${fresh ? 'is awake for the first time' : 'resumed'} · ${config.publicUrl}`);
+  log.info(`AUDA ${fresh ? 'is awake for the first time' : 'resumed'} · ${config.publicUrl}${lanAddresses().length ? ` · LAN: ${lanAddresses().map((a) => `http://${a}:${config.port}`).join(', ')}` : ''}`);
+  startDiscovery();
   if (!fresh) {
     const open = q.get("SELECT COUNT(*) n FROM tasks WHERE state NOT IN ('COMPLETED','FAILED','CANCELLED')")!.n;
     const resp = q.get("SELECT COUNT(*) n FROM responsibilities WHERE state NOT IN ('ENDED','PAUSED')")!.n;
@@ -94,6 +100,7 @@ async function stop(sig: string) {
   if (stopping) return; stopping = true;
   log.info(`stopping (${sig})`);
   stopEngine();
+  stopDiscovery();
   server.close();
   await shutdownBrowser();
   db.close();

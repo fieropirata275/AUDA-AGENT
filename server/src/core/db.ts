@@ -56,6 +56,10 @@ ensureColumn('tasks', 'verification_json', 'TEXT');
 ensureColumn('tasks', 'diagnosis', 'TEXT');
 ensureColumn('tasks', 'recoveries', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('tasks', 'depth', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('tasks', 'inbox_json', "TEXT NOT NULL DEFAULT '[]'");
+ensureColumn('messages', 'author_type', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('messages', 'author_id', 'TEXT');
+ensureColumn('messages', 'attachments_json', "TEXT NOT NULL DEFAULT '[]'");
 db.exec('CREATE INDEX IF NOT EXISTS events_pending ON events(dispatched, created_at)');
 db.exec('CREATE INDEX IF NOT EXISTS tasks_parent ON tasks(parent_task_id)');
 

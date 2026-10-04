@@ -387,3 +387,27 @@ CREATE TABLE IF NOT EXISTS devices (
   created_at INTEGER NOT NULL,
   revoked_at INTEGER
 );
+
+-- Apps (e.g. the Android client) that are allowed to control AUDA.
+CREATE TABLE IF NOT EXISTS clients (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  platform TEXT,
+  token_hash TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  last_seen_at INTEGER,
+  revoked_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS pairings (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  platform TEXT,
+  code TEXT NOT NULL,
+  secret_hash TEXT NOT NULL,
+  state TEXT NOT NULL,           -- pending|approved|rejected|claimed|expired
+  client_id TEXT,
+  token TEXT,                    -- held only until the app collects it
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);

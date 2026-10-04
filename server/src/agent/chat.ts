@@ -28,17 +28,17 @@ export function ensureConversation(id?: string, spaceId?: string | null, channel
   return cid;
 }
 
-function addMessage(conversationId: string, role: 'user' | 'auda', content: string, objects: Reply['objects'] = [], channel = 'web') {
+function addMessage(conversationId: string, role: 'user' | 'auda', content: string, objects: Reply['objects'] = [], channel = 'web', authorType = role === 'user' ? 'user' : 'auda') {
   const id = uid('msg');
-  insert('messages', { id, conversation_id: conversationId, role, content, objects_json: JSON.stringify(objects), channel, created_at: now() });
+  insert('messages', { id, conversation_id: conversationId, role, content, objects_json: JSON.stringify(objects), channel, author_type: authorType, created_at: now() });
   update('conversations', conversationId, { updated_at: now() });
   changed('message', id);
   return id;
 }
 
-export async function handleUserMessage(conversationId: string, text: string, channel = 'web') {
+export async function handleUserMessage(conversationId: string, text: string, channel = 'web', opts: { skipUserMessage?: boolean } = {}) {
   const conv = q.get('SELECT * FROM conversations WHERE id = ?', conversationId)!;
-  const msgId = addMessage(conversationId, 'user', text, [], channel);
+  const msgId = opts.skipUserMessage ? uid('msg') : addMessage(conversationId, 'user', text, [], channel);
   if (q.get("SELECT COUNT(*) n FROM messages WHERE conversation_id = ? AND role = 'user'", conversationId)!.n === 1) {
     update('conversations', conversationId, { title: text.slice(0, 60) }); changed('conversation', conversationId);
   }
@@ -54,7 +54,7 @@ export async function handleUserMessage(conversationId: string, text: string, ch
     reply = { text: `I couldn’t do that: ${(e as Error).message}`, objects: [] };
   }
   if (reply.objects.length) activity('user', `You asked: “${text.length > 70 ? text.slice(0, 67) + '…' : text}”`, { detail: reply.text.split('\n')[0] });
-  addMessage(conversationId, 'auda', reply.text, reply.objects, channel);
+  addMessage(conversationId, 'auda', reply.text, reply.objects, channel, 'auda');
   return reply;
 }
 

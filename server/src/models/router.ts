@@ -7,13 +7,16 @@ import Anthropic from '@anthropic-ai/sdk';
 import { getSetting, insert, now, q, uid } from '../core/db.ts';
 import { resolveSecret } from '../secrets/broker.ts';
 import { log } from '../core/log.ts';
+import { chat as oaiChat } from './openai.ts';
+import { guarded } from '../connectors/runtime.ts';
 
 export type Role = 'reasoning' | 'utility' | 'vision' | 'coding' | 'fallback';
 export interface RoleTarget { provider: 'anthropic' | 'local' | 'none'; model: string }
 export interface ModelSettings {
   roles: Record<Role, RoleTarget>;
   anthropicSecret?: string;
-  local?: { baseUrl: string; model: string };
+  /** OpenAI-compatible local server (LM Studio, Ollama, llama.cpp, vLLM). */
+  local?: { baseUrl: string; model: string; kind?: 'lmstudio' | 'openai'; tools?: boolean; apiKeySecret?: string; contextLength?: number };
   dailyBudget?: number;      // in currency units (€/$), 0 = unlimited
   monthlyBudget?: number;
 }
@@ -80,7 +83,18 @@ export function providerReady(t: RoleTarget) {
   return false;
 }
 export const hasReasoningModel = () => providerReady(modelSettings().roles.reasoning);
-export const canUseTools = () => Boolean(MOCK) || modelSettings().roles.reasoning.provider === 'anthropic' && providerReady(modelSettings().roles.reasoning);
+export const canUseTools = () => {
+  if (MOCK) return true;
+  const s = modelSettings(), r = s.roles.reasoning;
+  if (!providerReady(r)) return false;
+  return r.provider === 'anthropic' || (r.provider === 'local' && s.local?.tools !== false);
+};
+/** Rough context budget (characters) for the reasoning model, used to decide when agents hand off. */
+export const contextChars = () => {
+  const s = modelSettings();
+  if (s.roles.reasoning.provider === 'local' && s.local?.contextLength) return Math.floor(s.local.contextLength * 2.6);
+  return Infinity;
+};
 export const supportsServerTools = () => !MOCK && modelSettings().roles.reasoning.provider === 'anthropic';
 
 export class BudgetExceeded extends Error {}
@@ -165,23 +179,17 @@ async function callAnthropic(model: string, a: CompleteArgs): Promise<CompleteRe
   return { text, content: res.content, toolUses, stopReason: res.stop_reason, model: res.model };
 }
 
-/** OpenAI-compatible local endpoint (Ollama, llama.cpp, vLLM…). Text tasks only. */
+/** OpenAI-compatible local endpoint (LM Studio, Ollama, llama.cpp, vLLM…) — with tool calling. */
 async function callLocal(model: string, a: CompleteArgs): Promise<CompleteResult> {
-  const base = modelSettings().local?.baseUrl?.replace(/\/$/, '');
-  if (!base) throw new Error('No local model endpoint configured');
-  if (a.tools?.length) throw new Error('Local models are used for text tasks only');
-  const res = await fetch(`${base}/v1/chat/completions`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, signal: a.signal ? AbortSignal.any([a.signal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000),
-    body: JSON.stringify({ model, max_tokens: a.maxTokens ?? 2000, messages: [
-      ...(a.system ? [{ role: 'system', content: a.system }] : []),
-      ...(a.messages ? a.messages.map((m) => ({ role: m.role, content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) })) : [{ role: 'user', content: a.prompt ?? '' }]),
-    ] }),
-  });
-  if (!res.ok) throw new Error(`Local model HTTP ${res.status}`);
-  const j: any = await res.json();
-  const text = j.choices?.[0]?.message?.content ?? '';
-  record(a, { provider: 'local', model }, j.usage?.prompt_tokens ?? 0, j.usage?.completion_tokens ?? 0, true);
-  return { text, content: [{ type: 'text', text, citations: null } as any], toolUses: [], stopReason: 'end_turn', model };
+  const l = modelSettings().local;
+  if (!l?.baseUrl) throw new Error('No local model endpoint configured');
+  const r = await guarded('lmstudio', () => oaiChat(
+    { baseUrl: l.baseUrl, model, apiKey: resolveSecret(l.apiKeySecret), tools: l.tools },
+    { system: a.system, messages: (a.messages ?? [{ role: 'user', content: a.prompt ?? '' }]) as any, tools: a.tools as any[], maxTokens: Math.min(a.maxTokens ?? 4096, 16_384), signal: a.signal },
+  ));
+  record(a, { provider: 'local', model }, r.usage.input, r.usage.output, true);
+  const text = r.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+  return { text, content: r.content as any, toolUses: r.content.filter((b) => b.type === 'tool_use').map((b) => ({ id: b.id, name: b.name, input: b.input })), stopReason: r.stopReason, model: r.model };
 }
 
 function record(a: CompleteArgs, t: RoleTarget, inTok: number, outTok: number, ok: boolean) {
