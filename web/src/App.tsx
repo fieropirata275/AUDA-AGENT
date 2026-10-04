@@ -128,6 +128,14 @@ export function App() {
             <AnimatePresence>{inbox && <Inbox onClose={() => setInbox(false)} />}</AnimatePresence>
           </div>
         </div>
+        {s.safeMode && (
+          <div className="safe-banner">
+            <Morph shape="blocked" size={20} color="var(--problem)" animate={false} />
+            <span className="grow"><b>Safe mode.</b> AUDA crashed repeatedly, so it isn’t running tasks, watchers or schedules. Check Activity for what went wrong, then resume.</span>
+            <button className="btn sm" onClick={() => navigate('/settings?tab=reliability')}>Details</button>
+            <button className="btn primary sm" onClick={() => post('/api/system/leave-safe-mode').then(() => setTimeout(() => location.reload(), 4000))}>Resume normal operation</button>
+          </div>
+        )}
         <AnimatePresence mode="wait">
           <motion.div key={section + (parts[1] ?? '')} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4, transition: { duration: 0.12 } }} transition={fm.glide}>
             {page}

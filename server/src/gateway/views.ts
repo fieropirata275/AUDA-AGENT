@@ -15,6 +15,9 @@ export const taskView = (t: Row) => ({
   result: t.result_summary, error: t.error, retryCount: t.retry_count, maxRetries: t.max_retries, nextEventAt: t.next_event_at,
   waitingOn: t.waiting_on, cost: t.cost_micro / 1e6, createdAt: t.created_at, startedAt: t.started_at, completedAt: t.completed_at,
   updatedAt: t.updated_at, origin: json(t.origin_json, {}),
+  parentTaskId: t.parent_task_id, depth: t.depth ?? 0, plan: json(t.plan_json, []), verification: json(t.verification_json, null),
+  diagnosis: t.diagnosis, recoveries: t.recoveries ?? 0, criteria: json<any>(t.input_json, {}).criteria ?? null,
+  children: q.all('SELECT id, title, state FROM tasks WHERE parent_task_id = ? ORDER BY created_at', t.id),
   steps: q.all('SELECT idx, key, title, state, narration, started_at, ended_at, attempts FROM task_steps WHERE task_id = ? ORDER BY idx', t.id)
     .map((s) => ({ idx: s.idx, key: s.key, title: s.title, state: s.state, narration: s.narration, startedAt: s.started_at, endedAt: s.ended_at, attempts: s.attempts })),
 });
@@ -73,6 +76,8 @@ export function settingsView() {
     spend: spend(),
     capabilities: Object.values(capabilities).map((c) => ({ id: c.id, title: c.title, group: c.group, risk: c.risk, default: c.level, level: effectiveLevel(c.id) })),
     concurrency: getSetting('engine.concurrency', 3),
+    agentVerify: getSetting('agent.verify', true),
+    agentWebSearch: getSetting('agent.webSearch', true),
   };
 }
 

@@ -36,12 +36,12 @@ export function Work() {
   const approvals = Object.values(s.approvals).filter((a) => a.state === 'pending');
   const suggested = Object.values(s.rules).filter((r) => r.state === 'draft');
   const problems = tasks.filter((t) => t.state === 'WAITING_USER' && t.attention === 'problem' || t.state === 'FAILED' && (t.completedAt ?? 0) > Date.now() - 86400_000);
-  const progress = tasks.filter((t) => ['RUNNING', 'READY', 'WAITING_EXTERNAL', 'PAUSED', 'PLANNING'].includes(t.state) || (t.state === 'WAITING_USER' && t.attention === 'approval')).sort((a, b) => b.updatedAt - a.updatedAt);
+  const progress = tasks.filter((t) => !t.parentTaskId).filter((t) => ['RUNNING', 'READY', 'WAITING_EXTERNAL', 'PAUSED', 'PLANNING'].includes(t.state) || (t.state === 'WAITING_USER' && t.attention === 'approval')).sort((a, b) => b.updatedAt - a.updatedAt);
   const recovering = tasks.filter((t) => ['RETRYING', 'RECOVERING'].includes(t.state));
   const scheduledTasks = tasks.filter((t) => t.state === 'SCHEDULED').sort((a, b) => (a.nextEventAt ?? 0) - (b.nextEventAt ?? 0));
   const resps = Object.values(s.responsibilities).filter((r) => r.state !== 'ENDED').sort((a, b) => b.updatedAt - a.updatedAt);
   const recurring = resps.flatMap((r) => r.schedules.filter((x) => x.enabled && x.nextRunAt).map((x) => ({ ...x, resp: r }))).sort((a, b) => a.nextRunAt! - b.nextRunAt!);
-  const completed = tasks.filter((t) => ['COMPLETED', 'CANCELLED', 'FAILED'].includes(t.state)).sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0));
+  const completed = tasks.filter((t) => !t.parentTaskId && ['COMPLETED', 'CANCELLED', 'FAILED'].includes(t.state)).sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0));
   const ended = Object.values(s.responsibilities).filter((r) => r.state === 'ENDED');
   const show = (v: View) => view === 'all' || view === v;
   const needsN = approvals.length + suggested.length + problems.length;
@@ -50,6 +50,7 @@ export function Work() {
     <div>
       <div className="page-head">
         <div><h1 className="title-lg">Work</h1><p>Everything AUDA is handling. It works quietly and only brings you what needs your judgment.</p></div>
+        <button className="btn primary" onClick={() => openSheet({ type: 'assign', id: 'new' })}><Morph shape="plus" size={16} />Assign work</button>
       </div>
       <div className="work-filter">
         <Segmented id="work" value={view} onChange={(v) => navigate(v === 'all' ? '/work' : `/work?view=${v}`)} options={[

@@ -54,13 +54,34 @@ function anthropic() {
   return client;
 }
 
+/**
+ * Test/dev provider: AUDA_MOCK_MODEL points at a module exporting
+ * `respond(args) => { content, stopReason }`. Lets the agent path (tools,
+ * subtasks, verification, loops, crashes) be exercised without an API key.
+ */
+const MOCK = process.env.AUDA_MOCK_MODEL;
+let mockMod: any = null;
+async function callMock(a: CompleteArgs): Promise<CompleteResult> {
+  mockMod ??= await import(MOCK!);
+  const r = await mockMod.respond(a);
+  const content = r.content ?? [{ type: 'text', text: r.text ?? '' }];
+  record(a, { provider: 'local', model: 'mock' }, 0, 0, true);
+  return {
+    text: content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n'), content,
+    toolUses: content.filter((b: any) => b.type === 'tool_use').map((b: any) => ({ id: b.id, name: b.name, input: b.input })),
+    stopReason: r.stopReason ?? (content.some((b: any) => b.type === 'tool_use') ? 'tool_use' : 'end_turn'), model: 'mock',
+  };
+}
+
 export function providerReady(t: RoleTarget) {
+  if (MOCK) return true;
   if (t.provider === 'anthropic') return Boolean(anthropicKey());
   if (t.provider === 'local') return Boolean(modelSettings().local?.baseUrl && (t.model || modelSettings().local?.model));
   return false;
 }
 export const hasReasoningModel = () => providerReady(modelSettings().roles.reasoning);
-export const canUseTools = () => modelSettings().roles.reasoning.provider === 'anthropic' && providerReady(modelSettings().roles.reasoning);
+export const canUseTools = () => Boolean(MOCK) || modelSettings().roles.reasoning.provider === 'anthropic' && providerReady(modelSettings().roles.reasoning);
+export const supportsServerTools = () => !MOCK && modelSettings().roles.reasoning.provider === 'anthropic';
 
 export class BudgetExceeded extends Error {}
 
@@ -88,7 +109,8 @@ export interface CompleteArgs {
   system?: string;
   prompt?: string;
   messages?: Anthropic.Beta.BetaMessageParam[];
-  tools?: Anthropic.Beta.BetaTool[];
+  tools?: Anthropic.Beta.BetaToolUnion[];
+  signal?: AbortSignal;
   maxTokens?: number;
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   taskId?: string;
@@ -110,9 +132,11 @@ export async function complete(a: CompleteArgs): Promise<CompleteResult> {
   for (const t of targets) {
     setFlight(1);
     try {
+      if (MOCK) return await callMock(a);
       return t.provider === 'anthropic' ? await callAnthropic(t.model, a) : await callLocal(t.model || s.local!.model, a);
     } catch (e) {
       lastErr = e;
+      if (a.signal?.aborted) throw e;
       log.warn(`model ${t.provider}/${t.model} failed for ${a.purpose}`, String(e));
       record(a, t, 0, 0, false);
     } finally { setFlight(-1); }
@@ -133,7 +157,7 @@ async function callAnthropic(model: string, a: CompleteArgs): Promise<CompleteRe
     ...(model !== 'claude-haiku-4-5' ? { thinking: { type: 'adaptive' as const }, output_config: { effort: a.effort ?? 'medium' } } : {}),
     ...(serverFallback ? { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' as any } : {}),
   };
-  const res = await c.beta.messages.create(params);
+  const res = await c.beta.messages.create(params, { signal: a.signal, timeout: 10 * 60_000 });
   record(a, { provider: 'anthropic', model }, res.usage.input_tokens, res.usage.output_tokens, true);
   if (res.stop_reason === 'refusal') throw new Error('The model declined this request.');
   const text = res.content.filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === 'text').map((b) => b.text).join('\n');
@@ -147,7 +171,7 @@ async function callLocal(model: string, a: CompleteArgs): Promise<CompleteResult
   if (!base) throw new Error('No local model endpoint configured');
   if (a.tools?.length) throw new Error('Local models are used for text tasks only');
   const res = await fetch(`${base}/v1/chat/completions`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(120_000),
+    method: 'POST', headers: { 'content-type': 'application/json' }, signal: a.signal ? AbortSignal.any([a.signal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000),
     body: JSON.stringify({ model, max_tokens: a.maxTokens ?? 2000, messages: [
       ...(a.system ? [{ role: 'system', content: a.system }] : []),
       ...(a.messages ? a.messages.map((m) => ({ role: m.role, content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) })) : [{ role: 'user', content: a.prompt ?? '' }]),

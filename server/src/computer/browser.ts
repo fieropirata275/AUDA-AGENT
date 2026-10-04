@@ -84,6 +84,16 @@ onViewers('screen', (n) => {
 
 function mark(action: string, url: string) { activity = { action, url, ts: Date.now() }; publish('screen.meta', status()); }
 
+// One page, many agents: serialise use so parallel tasks can't navigate under each other.
+let chain: Promise<unknown> = Promise.resolve();
+export const browserQueue = { waiting: 0 };
+export function withBrowser<T>(fn: () => Promise<T>): Promise<T> {
+  browserQueue.waiting++;
+  const run = chain.then(fn, fn).finally(() => { browserQueue.waiting--; });
+  chain = run.catch(() => {});
+  return run;
+}
+
 export async function open(url: string) {
   const p = await ensure();
   mark('Opening', url);
@@ -92,7 +102,8 @@ export async function open(url: string) {
   return p;
 }
 
-export async function readPage(url: string) {
+export function readPage(url: string) { return withBrowser(() => readPageUnlocked(url)); }
+async function readPageUnlocked(url: string) {
   const p = await open(url);
   mark('Reading', url);
   const title = await p.title();
@@ -101,9 +112,8 @@ export async function readPage(url: string) {
   return { url: p.url(), title, text: text.slice(0, 60_000) };
 }
 
-export async function screenshot(): Promise<Buffer> {
-  const p = await ensure();
-  return p.screenshot({ type: 'png' });
+export function screenshot(): Promise<Buffer> {
+  return withBrowser(async () => (await ensure()).screenshot({ type: 'png' }));
 }
 
 export async function health(timeoutMs = 5000): Promise<boolean> {

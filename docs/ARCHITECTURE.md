@@ -232,3 +232,45 @@ morphs, never icon swaps. Idle breathes; listening expands; thinking reorganises
 inner harmonics; working orbits; waiting slows and settles; needs-you pulses softly;
 completion briefly resolves into a perfect circle; trouble deforms gracefully and
 exposes a notch — never red shaking.
+
+---
+
+## 11. Reliability model
+
+AUDA cannot promise that nothing ever fails — no system can, least of all
+against failures nobody has seen yet. It is built so that failures are
+**expected, detected, contained, recovered where safe, and explained** when not.
+Each failure class has a specific defence, and each defence has a test.
+
+| Failure | Defence | Where | Tested by |
+|---|---|---|---|
+| Worker/process dies mid-step | Leases + heartbeats; resume from last completed step | `tasks/engine.ts` | `e2e-agent` (SIGKILL mid-command) |
+| A step hangs forever | Per-step time budget; abort signal passed to models and tools; retried as transient | engine `stepTimeoutMs` | unit + engine |
+| Same action repeated by a retry | Idempotency keys; completed actions replay their stored result; unknown-state external actions never repeat without you | `tools/broker.ts` | `npm test` |
+| Retrying something that can't succeed | Error classification: transient → backoff with jitter; permanent → stop now with a plain diagnosis; unknown → bounded retries | `tools/errors.ts` | `e2e-agent` |
+| One bad task crash-loops the core | Recovery counter; quarantined after 3 crashes, everything else keeps running | `abandonRun` | `e2e-reliability` |
+| Core crash loop (any cause) | Process supervisor backs off and boots **safe mode** (UI/API up, nothing executes) after 5 crashes in 5 min | `bin/auda.ts` | `e2e-reliability` |
+| Core frozen (event loop blocked) | Supervisor health-probes every 10 s; 3 misses → kill and restart | `bin/auda.ts` | `e2e-reliability` (SIGSTOP) |
+| Memory leak | Graceful restart above `AUDA_MAX_RSS_MB` | `bin/auda.ts` | — |
+| Signal lost between "happened" and "handled" | Event outbox: persisted before dispatch, marked after handlers settle, replayed on boot; wake-ups are idempotent per event | `core/bus.ts` | `e2e-agent` |
+| Database corruption | `quick_check` at boot; corrupt file kept aside; newest passing backup restored automatically | `core/db.ts` | `e2e-reliability` |
+| Data loss | Hourly online backups (`VACUUM INTO`), newest 48 kept | `core/db.ts` | `e2e-reliability` |
+| Disk full / slow loop | Supervisor alerts with specifics | `supervisor/` | — |
+| Parallel agents colliding on the browser | Browser access is serialised | `computer/browser.ts` | — |
+| Flaky external service | Circuit breaker per connector (5 failures → 5 min cooldown) | `connectors/runtime.ts` | — |
+
+### Agents doing hard work
+
+| Typical agent failure | Defence |
+|---|---|
+| Claims "done" without doing it | Independent reviewer checks the result against **done when** before completion; up to two revise rounds; otherwise marked *not fully verified* |
+| Endless loops | Identical-call detection (warn at 3, stop at 5; bookkeeping calls get 2× slack); hard turn cap |
+| Context overflow on long tasks | Handoff to a fresh context with a structured progress summary (append-only — never rewrites history) |
+| Giant tool outputs | Outputs over 12 k chars saved as files; the agent gets head + tail + a pointer |
+| Malformed tool calls | Schema validation; errors returned to the model, not thrown |
+| Prompt injection via web content | Web/file content wrapped as `<untrusted_content>`; all side effects still pass the policy engine |
+| Too big for one agent | `spawn_subtasks`: up to 6 parallel sub-agents (depth ≤ 2), each with its own workspace; parent waits durably and joins results; stopping the parent stops the children |
+| Agents trampling each other's files | Per-task workspace `~/work/<task>` |
+
+The scripted model (`scripts/mock-model.mjs`, enabled with `AUDA_MOCK_MODEL`)
+lets the whole agent path run deterministically without an API key.

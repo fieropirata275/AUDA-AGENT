@@ -17,6 +17,11 @@ import { startSupervisor } from './supervisor/supervisor.ts';
 import { initPresence } from './agent/presence.ts';
 import { consolidate } from './memory/consolidate.ts';
 import { createServer } from './gateway/http.ts';
+import { replayPending, pruneEvents } from './core/bus.ts';
+import { backup, bootReport } from './core/db.ts';
+import { system } from './core/system.ts';
+import fs from 'node:fs';
+import path from 'node:path';
 import { attachRealtime } from './gateway/realtime.ts';
 import { shutdown as shutdownBrowser } from './computer/browser.ts';
 import { activity } from './core/activity.ts';
@@ -54,11 +59,23 @@ initDevices();
 registerTool('notify.user', async (i) => ({ id: notify(i.level ?? 'fyi', i.title, i.body) }));
 initResponsibilities();
 initPresence();
-startEngine({ concurrency: getSetting('engine.concurrency', config.workerConcurrency) });
-startScheduler();
-startWatchers();
+if (bootReport.integrity === 'restored') activity('recover', 'Restored the database from a backup', { detail: `The database failed its integrity check on startup (${bootReport.detail}). AUDA restored ${bootReport.restoredFrom} and kept the damaged copy for inspection. Anything after that backup may need redoing.` });
+if (system.safeMode) {
+  // Safe mode: the UI and API stay up; nothing executes until you say so.
+  activity('problem', 'AUDA started in safe mode', { detail: 'The core crashed repeatedly, so task execution, watchers and schedules are paused. Inspect recent problems in Activity, then leave safe mode from Settings → Reliability.' });
+  log.warn('SAFE MODE: engine, scheduler and watchers are paused');
+} else {
+  startEngine({ concurrency: getSetting('engine.concurrency', config.workerConcurrency) });
+  startScheduler();
+  startWatchers();
+  const replayed = replayPending();
+  if (replayed) activity('recover', `Replayed ${replayed} event${replayed > 1 ? 's' : ''} interrupted by the last shutdown`, { detail: 'They had been recorded but not fully handled; AUDA handled them now.' });
+}
 startSupervisor();
 setInterval(() => void consolidate().catch((e) => log.warn('consolidation failed', String(e))), 10 * 60_000);
+// Backups: one at boot (after the integrity check passed) and hourly; daily pruning of old events.
+setTimeout(() => { try { system.lastBackup = backup(); } catch (e) { log.warn('backup failed', String(e)); } }, 15_000);
+setInterval(() => { try { system.lastBackup = backup(); pruneEvents(); } catch (e) { log.warn('backup failed', String(e)); } }, 3600_000);
 onNarration(() => {});
 
 const server = createServer();
@@ -84,5 +101,12 @@ async function stop(sig: string) {
 }
 process.on('SIGINT', () => void stop('SIGINT'));
 process.on('SIGTERM', () => void stop('SIGTERM'));
-process.on('uncaughtException', (e) => log.error('uncaught', e));
-process.on('unhandledRejection', (e) => log.error('unhandled rejection', e));
+// Unexpected errors are recorded with full stacks; the process keeps serving and the
+// external supervisor restarts it if it ever stops answering.
+const crashLog = (kind: string, e: unknown) => {
+  log.error(kind, e);
+  system.unexpectedErrors++;
+  try { fs.appendFileSync(path.join(config.dataDir, 'crash.log'), `${new Date().toISOString()} ${kind}: ${(e as Error)?.stack ?? e}\n`); } catch { /* best effort */ }
+};
+process.on('uncaughtException', (e) => crashLog('uncaught exception', e));
+process.on('unhandledRejection', (e) => crashLog('unhandled rejection', e));

@@ -1,5 +1,7 @@
 /** Settings: identity, autonomy, rules, models, notifications, security, resources. */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { ago, bytes } from '../lib/time';
+import { openSheet } from '../components/ui';
 import { useStore, getTheme, setTheme } from '../lib/store';
 import { api, post } from '../lib/api';
 import { useRoute, navigate } from '../lib/router';
@@ -7,12 +9,58 @@ import { Segmented, Button, Toggle, Empty } from '../components/controls';
 import { RuleCard } from '../components/RuleCard';
 import { setSoundEnabled } from '../lib/sound';
 
-const TABS = [['identity', 'Identity'], ['autonomy', 'Autonomy'], ['rules', 'Rules'], ['models', 'Models'], ['notifications', 'Notifications'], ['security', 'Security'], ['resources', 'Resources']] as const;
+const TABS = [['identity', 'Identity'], ['autonomy', 'Autonomy'], ['rules', 'Rules'], ['models', 'Models'], ['notifications', 'Notifications'], ['security', 'Security'], ['reliability', 'Reliability'], ['resources', 'Resources']] as const;
 const LEVEL_LABEL: Record<string, string> = { autonomous: 'On its own', rule: 'By your rules', approval: 'Always asks', deny: 'Never' };
 const put = (key: string, value: unknown) => api(`/api/settings/${key}`, { method: 'PUT', body: { value } });
 
 function Row({ title, sub, children }: { title: string; sub?: string; children: React.ReactNode }) {
   return <div className="set-row"><div className="grow"><div style={{ fontWeight: 560 }}>{title}</div>{sub && <div className="small faint">{sub}</div>}</div><div>{children}</div></div>;
+}
+
+function Reliability() {
+  const [sys, setSys] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { const load = () => api('/api/system').then(setSys).catch(() => {}); load(); const t = setInterval(load, 4000); return () => clearInterval(t); }, []);
+  if (!sys) return <div className="faint">Loading…</div>;
+  const up = Math.round(sys.uptimeMs / 60000);
+  const tiles = [
+    { k: 'Running for', v: up < 60 ? `${up} min` : `${Math.round(up / 60)} h`, tone: '' },
+    { k: 'Mode', v: sys.safeMode ? 'Safe mode' : 'Normal', tone: sys.safeMode ? 'bad' : 'good' },
+    { k: 'Process supervisor', v: sys.supervised ? 'Watching' : 'Not running', tone: sys.supervised ? 'good' : '' },
+    { k: 'Recoveries (24 h)', v: sys.recentRecoveries, tone: '' },
+    { k: 'Failed tasks (24 h)', v: sys.failedToday, tone: sys.failedToday ? 'bad' : '' },
+    { k: 'Event-loop lag', v: `${sys.loopLagMs} ms`, tone: sys.loopLagMs > 500 ? 'bad' : 'good' },
+    { k: 'Memory', v: `${sys.rssMb} MB`, tone: '' },
+    { k: 'Disk free', v: sys.diskFreeMb != null ? `${(sys.diskFreeMb / 1024).toFixed(1)} GB` : '—', tone: sys.diskFreeMb != null && sys.diskFreeMb < 500 ? 'bad' : '' },
+    { k: 'Undelivered events', v: sys.pendingEvents, tone: sys.pendingEvents > 20 ? 'bad' : '' },
+    { k: 'Unexpected errors', v: sys.unexpectedErrors, tone: sys.unexpectedErrors ? 'bad' : '' },
+  ];
+  return (
+    <div className="stack" style={{ gap: 18 }}>
+      <p className="muted" style={{ margin: 0 }}>AUDA assumes things will fail and is built to notice, contain and recover. This is the live state of those safeguards.</p>
+      <div className="health-grid">{tiles.map((t) => <div key={t.k} className={`health-tile ${t.tone}`}><div className="v tnum">{t.v}</div><div className="k">{t.k}</div></div>)}</div>
+      {sys.safeMode && <div className="row"><Button variant="primary" onClick={() => post('/api/system/leave-safe-mode').then(() => setTimeout(() => location.reload(), 4000))}>Resume normal operation</Button></div>}
+      <div>
+        <div className="row"><div className="label grow">Backups · hourly, newest 48 kept · {sys.boot.integrity === 'restored' ? `restored from ${sys.boot.restoredFrom} at last start` : `integrity check ${sys.boot.integrity === 'fresh' ? 'n/a (new database)' : 'passed'} at last start`}</div>
+          <Button size="sm" busy={busy} onClick={async () => { setBusy(true); await post('/api/system/backup').finally(() => setBusy(false)); setSys(await api('/api/system')); }}>Back up now</Button></div>
+        <table className="table small"><tbody>{sys.backups.map((b: any) => <tr key={b.name}><td className="mono">{b.name}</td><td className="tnum">{bytes(b.size)}</td><td className="faint">{ago(b.at)}</td></tr>)}</tbody></table>
+        {!sys.backups.length && <div className="small faint">The first backup is made a few seconds after start.</div>}
+      </div>
+      {sys.quarantined.length > 0 && (
+        <div><div className="label">Quarantined tasks</div>
+          <div className="stack" style={{ marginTop: 6 }}>{sys.quarantined.map((t: any) => <button key={t.id} className="hist-row" onClick={() => openSheet({ type: 'task', id: t.id })}><div className="grow" style={{ textAlign: 'left' }}><div style={{ fontWeight: 550 }}>{t.title}</div><div className="small faint">{t.diagnosis}</div></div></button>)}</div>
+        </div>
+      )}
+      <dl className="kv small">
+        <dt>Step budgets</dt><dd>Every task step has a time limit; a hung step is aborted and retried instead of blocking forever.</dd>
+        <dt>Retries</dt><dd>Temporary failures retry with exponential backoff and jitter. Permanent ones stop immediately with a plain diagnosis.</dd>
+        <dt>Crash recovery</dt><dd>Work resumes from the last finished step. A task that takes the worker down three times is quarantined.</dd>
+        <dt>Event outbox</dt><dd>Events are saved before they are delivered and replayed after a crash, so a signal is never silently lost.</dd>
+        <dt>Watchdog</dt><dd>The process supervisor restarts AUDA if it crashes, freezes or outgrows its memory limit, and switches to safe mode after a crash loop.</dd>
+        <dt>Agents</dt><dd>Loop detection, input validation, output capping, context handoff, untrusted-content marking and independent review before “done”.</dd>
+      </dl>
+    </div>
+  );
 }
 
 function Rules() {
@@ -100,11 +148,14 @@ export function Settings() {
           </dl>
           <Button size="sm" onClick={() => navigate('/activity')}>Open the audit log</Button>
         </div>}
+        {tab === 'reliability' && <Reliability />}
         {tab === 'resources' && <div className="stack" style={{ gap: 4 }}>
           <Row title="Model spend today" sub={`This month: $${st.spend.month.toFixed(2)}`}><span className="tnum title" style={{ fontSize: 18 }}>${st.spend.today.toFixed(2)}</span></Row>
           <Row title="Daily model budget" sub="Work that needs a model pauses when reached."><input className="input" style={{ width: 100 }} type="number" min={0} step={0.5} defaultValue={st.models.dailyBudget} onBlur={(e) => put('models', { dailyBudget: Number(e.target.value) })} /></Row>
           <Row title="Monthly model budget"><input className="input" style={{ width: 100 }} type="number" min={0} step={1} defaultValue={st.models.monthlyBudget} onBlur={(e) => put('models', { monthlyBudget: Number(e.target.value) })} /></Row>
-          <Row title="Concurrent tasks" sub="How many tasks AUDA works on at once (applies after restart)."><Segmented id="conc" size="sm" value={String(st.concurrency)} onChange={(v) => put('engine.concurrency', Number(v))} options={['1', '2', '3', '4', '6'].map((x) => ({ value: x, label: x }))} /></Row>
+          <Row title="Concurrent tasks" sub="How many tasks and sub-agents run at once (applies after restart)."><Segmented id="conc" size="sm" value={String(st.concurrency)} onChange={(v) => put('engine.concurrency', Number(v))} options={['1', '2', '3', '4', '6', '8'].map((x) => ({ value: x, label: x }))} /></Row>
+          <Row title="Independent review" sub="A separate model call checks every open-ended result against its “done when” criteria before it counts as finished."><Toggle checked={st.agentVerify} onChange={(v) => put('agent.verify', v)} /></Row>
+          <Row title="Web search" sub="Let agents search the web (Claude’s server-side search)."><Toggle checked={st.agentWebSearch} onChange={(v) => put('agent.webSearch', v)} /></Row>
         </div>}
       </div>
     </div>

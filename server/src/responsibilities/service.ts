@@ -56,6 +56,8 @@ export function wake(respId: string, event: AudaEvent) {
   const resp = q.get('SELECT * FROM responsibilities WHERE id = ?', respId);
   if (!resp || ['PAUSED', 'ENDED', 'DRAFT'].includes(resp.state)) return;
   const pb = playbook(resp.playbook);
+  // Replayed events (after a crash) must not spawn a second task for the same signal.
+  if (q.get("SELECT 1 FROM tasks WHERE responsibility_id = ? AND json_extract(origin_json, '$.eventId') = ?", respId, event.id)) return;
   const open = openTask(respId);
   if (open) {
     // Already on it: don't spawn duplicates, but don't drop the signal either.

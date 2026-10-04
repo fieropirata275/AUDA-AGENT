@@ -31,6 +31,7 @@ export interface State {
   lastSeen: number | null;
   bootAt: number;
   publicUrl: string;
+  safeMode: boolean;
   /** ids of things that just completed, for celebratory motion */
   justCompleted: Record<string, number>;
 }
@@ -38,7 +39,7 @@ export interface State {
 let state: State = {
   ready: false, connected: false, identity: null, tasks: {}, responsibilities: {}, approvals: {}, rules: {}, connectors: {}, memories: {},
   notifications: {}, activity: {}, artifacts: {}, spaces: {}, conversations: {}, devices: {}, schedules: {}, messages: {},
-  computer: null, settings: null, catalog: [], playbooks: [], lastSeen: null, bootAt: Date.now(), publicUrl: '', justCompleted: {},
+  computer: null, settings: null, catalog: [], playbooks: [], lastSeen: null, bootAt: Date.now(), safeMode: false, publicUrl: '', justCompleted: {},
 };
 const listeners = new Set<() => void>();
 const set = (patch: Partial<State>) => { state = { ...state, ...patch }; listeners.forEach((l) => l()); };
@@ -53,7 +54,7 @@ export async function bootstrap() {
     ready: true, identity: b.identity, tasks: byId(b.tasks), responsibilities: byId(b.responsibilities), approvals: byId(b.approvals), rules: byId(b.rules),
     connectors: byId(b.connectors), memories: byId(b.memories), notifications: byId(b.notifications), activity: byId(b.activity), artifacts: byId(b.artifacts),
     spaces: byId(b.spaces), conversations: byId(b.conversations), devices: byId(b.devices), schedules: byId(b.schedules), computer: b.computer,
-    settings: b.settings, catalog: b.catalog, playbooks: b.playbooks, publicUrl: b.publicUrl,
+    settings: b.settings, catalog: b.catalog, playbooks: b.playbooks, publicUrl: b.publicUrl, safeMode: !!b.safeMode,
     ...(state.ready ? {} : { lastSeen: b.lastSeen, bootAt: Date.now() }),
   });
 }

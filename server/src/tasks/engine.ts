@@ -14,7 +14,7 @@ import { activity } from '../core/activity.ts';
 import { log } from '../core/log.ts';
 import { playbook, type StepCtx, type StepResult } from '../playbooks/types.ts';
 import { call } from '../tools/broker.ts';
-import { ApprovalRejected, NeedsApproval, PolicyDenied, Transient, UncertainAction } from '../tools/errors.ts';
+import { ApprovalRejected, NeedsApproval, PolicyDenied, StepTimeout, UncertainAction, classify, diagnose } from '../tools/errors.ts';
 import { HumanHasControl } from '../computer/index.ts';
 import { saveArtifact } from '../artifacts/store.ts';
 import { recall, remember } from '../memory/service.ts';
@@ -26,6 +26,8 @@ import { hash } from '../core/db.ts';
 
 export const WORKER_ID = `${os.hostname()}:${process.pid}:${uid('w').slice(2, 8)}`;
 const LEASE_MS = 30_000;
+const POISON_THRESHOLD = 3;
+const DEFAULT_STEP_TIMEOUT = Number(process.env.AUDA_STEP_TIMEOUT_MS ?? 10 * 60_000);
 const HEARTBEAT_MS = 5_000;
 
 export const TERMINAL = ['COMPLETED', 'FAILED', 'CANCELLED'];
@@ -56,6 +58,7 @@ export function createTask(t: CreateTask): string {
   const plan = pb.plan(t.input ?? {});
   const id = uid('task');
   const ts = now();
+  const depth = t.parentTaskId ? (q.get('SELECT depth FROM tasks WHERE id = ?', t.parentTaskId)?.depth ?? 0) + 1 : 0;
   const scheduled = t.runAt && t.runAt > ts + 1000;
   tx(() => {
     insert('tasks', {
@@ -63,7 +66,7 @@ export function createTask(t: CreateTask): string {
       responsibility_id: t.responsibilityId, space_id: t.spaceId ?? undefined, parent_task_id: t.parentTaskId,
       origin_json: JSON.stringify(t.origin ?? {}), state: scheduled ? 'SCHEDULED' : 'READY',
       next_event_at: scheduled ? t.runAt : undefined, step_count: plan.length, priority: t.priority ?? 2,
-      deadline_at: t.deadlineAt, now_line: scheduled ? `Scheduled for ${new Date(t.runAt!).toLocaleString()}` : 'Getting ready',
+      deadline_at: t.deadlineAt, depth, now_line: scheduled ? `Scheduled for ${new Date(t.runAt!).toLocaleString()}` : 'Getting ready',
       created_at: ts, updated_at: ts,
     });
     plan.forEach((s, idx) => insert('task_steps', { id: uid('step'), task_id: id, idx, key: s.key, title: s.title, state: 'pending' }));
@@ -92,6 +95,8 @@ export function cancelTask(id: string, why = 'Cancelled by you') {
   q.run("UPDATE approvals SET state = 'expired' WHERE task_id = ? AND state = 'pending'", id);
   for (const a of q.all('SELECT id FROM approvals WHERE task_id = ?', id)) changed('approval', a.id);
   activity('user', `Stopped: ${t.title}`, { taskId: id, responsibilityId: t.responsibility_id, spaceId: t.space_id });
+  // Stopping a task stops the sub-agents working for it.
+  for (const c of q.all(`SELECT id FROM tasks WHERE parent_task_id = ? AND state NOT IN ('COMPLETED','FAILED','CANCELLED')`, id)) cancelTask(c.id, 'Parent task was stopped');
   emit('task.cancelled', { subjectType: 'task', subjectId: id, payload: { responsibilityId: t.responsibility_id } });
 }
 
@@ -107,7 +112,7 @@ export function resumeTask(id: string) {
   const t = q.get('SELECT * FROM tasks WHERE id = ?', id);
   if (!t || !['PAUSED', 'FAILED', 'WAITING_USER', 'WAITING_EXTERNAL'].includes(t.state)) return;
   if (t.state === 'WAITING_USER' && t.attention === 'approval') return; // needs a decision, not a resume
-  setState(id, 'READY', { now_line: 'Resuming', attention: null, waiting_on: null, error: null, ...(t.state === 'FAILED' ? { retry_count: 0, completed_at: null } : {}) });
+  setState(id, 'READY', { now_line: 'Resuming', attention: null, waiting_on: null, error: null, diagnosis: null, ...(t.state === 'FAILED' ? { retry_count: 0, completed_at: null, recoveries: 0 } : {}) });
   activity('user', `Resumed: ${t.title}`, { taskId: id, responsibilityId: t.responsibility_id });
   emit('task.resumed', { subjectType: 'task', subjectId: id });
   kick();
@@ -139,6 +144,12 @@ export function startEngine(opts: { concurrency?: number } = {}) {
   // Any lease held by a previous process is dead by definition.
   for (const r of q.all("SELECT * FROM task_runs WHERE state = 'running' AND worker_id != ?", WORKER_ID)) abandonRun(r, 'AUDA restarted while this was running');
   timer = setInterval(tick, 500);
+  // Orchestration: when every child of a waiting parent is finished, wake the parent.
+  const childDone = (e: { payload: Record<string, any>; subjectId?: string }) => {
+    const child = q.get('SELECT parent_task_id FROM tasks WHERE id = ?', e.subjectId);
+    if (child?.parent_task_id) wakeParentIfDone(child.parent_task_id);
+  };
+  on('task.completed', childDone); on('task.failed', childDone); on('task.cancelled', childDone);
   on('computer.control.changed', (e) => {
     if (e.payload.controller !== 'auda') return;
     for (const t of q.all("SELECT id FROM tasks WHERE state = 'WAITING_EXTERNAL' AND waiting_on = 'computer'")) {
@@ -147,6 +158,15 @@ export function startEngine(opts: { concurrency?: number } = {}) {
     kick();
   });
 }
+export function wakeParentIfDone(parentId: string) {
+  const parent = q.get('SELECT * FROM tasks WHERE id = ?', parentId);
+  if (!parent || parent.state !== 'WAITING_EXTERNAL' || parent.waiting_on !== 'children') return;
+  const open = q.get(`SELECT COUNT(*) n FROM tasks WHERE parent_task_id = ? AND state NOT IN ('COMPLETED','FAILED','CANCELLED')`, parentId)!.n;
+  if (open) { update('tasks', parentId, { now_line: `Waiting for ${open} subtask${open > 1 ? 's' : ''}` }); changed('task', parentId); return; }
+  setState(parentId, 'READY', { waiting_on: null, next_event_at: null, now_line: 'Subtasks finished — combining results' });
+  kick();
+}
+
 export function stopEngine() { if (timer) clearInterval(timer); for (const r of running.values()) r.stop = true; }
 
 let kicked = false;
@@ -201,11 +221,20 @@ async function runTask(id: string, fromState: string) {
       changed('task', id);
 
       const vars = json<Record<string, any>>(task.checkpoint_json, {});
-      const ctx = makeCtx(task, step.idx, vars);
+      const abort = new AbortController();
+      const ctx = makeCtx(task, step.idx, vars, abort.signal);
+      const budget = pb.stepTimeoutMs?.[step.key] ?? DEFAULT_STEP_TIMEOUT;
       let result: StepResult;
+      let timer: NodeJS.Timeout | undefined;
       try {
-        result = await fn(ctx);
+        // A hung step must not hold its lease forever: race it against its time budget.
+        result = await Promise.race([
+          fn(ctx),
+          new Promise<never>((_, rej) => { timer = setTimeout(() => { abort.abort(); rej(new StepTimeout(`“${step.title}” took longer than ${Math.round(budget / 60000) || 1} min`)); }, budget); }),
+        ]);
+        clearTimeout(timer);
       } catch (e) {
+        clearTimeout(timer);
         const handled = handleStepError(task, step, e, vars);
         outcome = handled;
         break;
@@ -233,10 +262,11 @@ async function runTask(id: string, fromState: string) {
         break;
       }
       if (r.wait === 'external') {
-        setState(id, 'WAITING_EXTERNAL', { next_event_at: r.until ?? null, now_line: r.reason, waiting_on: 'external' });
+        setState(id, 'WAITING_EXTERNAL', { next_event_at: r.until ?? null, now_line: r.reason, waiting_on: r.on ?? 'external' });
         activity('wait', r.reason, { taskId: id, responsibilityId: task.responsibility_id, spaceId: task.space_id });
         emit('task.waiting', { subjectType: 'task', subjectId: id, payload: { on: 'external' } });
         outcome = 'waiting';
+        if (r.on === 'children') wakeParentIfDone(id); // children may already be done
         break;
       }
     }
@@ -285,20 +315,24 @@ function handleStepError(task: Row, step: Row | undefined, e: unknown, vars: Rec
     emit('task.waiting', { subjectType: 'task', subjectId: task.id, payload: { on: 'user', problem: true } });
     return 'blocked';
   }
-  // Everything else is retried with exponential backoff, then fails honestly.
+  // Everything else: classify. Permanent failures stop immediately with a diagnosis;
+  // transient and unknown ones retry with exponential backoff and jitter, then fail honestly.
+  const cls = classify(e);
   const retries = task.retry_count + 1;
   const message = (e as Error)?.message ?? String(e);
-  if (retries <= task.max_retries && !(e instanceof TypeError && /playbook/i.test(message))) {
+  const limit = cls === 'transient' ? task.max_retries + 2 : task.max_retries;
+  if (cls !== 'permanent' && retries <= limit) {
     const delay = Math.min(300_000, 2000 * 2 ** (retries - 1)) * (0.8 + Math.random() * 0.4);
     if (step) update('task_steps', step.id, { state: 'pending', narration: message });
-    setState(task.id, 'RETRYING', { retry_count: retries, error: message, next_event_at: now() + delay, now_line: `Hit a problem; trying again in ${Math.round(delay / 1000)}s` });
-    activity('recover', `Retrying “${step?.title ?? task.title}”`, { ...meta, detail: `${message} — attempt ${retries + 1} of ${task.max_retries + 1} in ${Math.round(delay / 1000)}s.` });
+    setState(task.id, 'RETRYING', { retry_count: retries, error: message, next_event_at: now() + delay, now_line: `Hit a ${cls === 'transient' ? 'temporary ' : ''}problem; trying again in ${Math.round(delay / 1000)}s` });
+    activity('recover', `Retrying “${step?.title ?? task.title}”`, { ...meta, detail: `${message} — attempt ${retries + 1} of ${limit + 1} in ${Math.round(delay / 1000)}s.`, raw: { class: cls, stack: (e as Error)?.stack } });
     return 'retrying';
   }
+  const diagnosis = diagnose(e, cls, `Stopped at “${step?.title ?? 'a step'}”`);
   if (step) update('task_steps', step.id, { state: 'failed', ended_at: now(), narration: message });
-  setState(task.id, 'FAILED', { error: message, completed_at: now(), now_line: 'AUDA hit a problem it couldn’t recover from', attention: 'problem' });
-  activity('problem', `AUDA hit a problem: ${task.title}`, { ...meta, detail: `${message}\nNothing after “${step?.title ?? 'this step'}” was done.` });
-  notify('attention', `AUDA hit a problem with “${task.title}”`, message, { type: 'task', id: task.id });
+  setState(task.id, 'FAILED', { error: message, diagnosis, completed_at: now(), now_line: 'AUDA hit a problem it couldn’t recover from', attention: 'problem' });
+  activity('problem', `AUDA hit a problem: ${task.title}`, { ...meta, detail: `${diagnosis}\nNothing after “${step?.title ?? 'this step'}” was done.`, raw: { class: cls, stack: (e as Error)?.stack } });
+  notify('attention', `AUDA hit a problem with “${task.title}”`, diagnosis, { type: 'task', id: task.id });
   emit('task.failed', { subjectType: 'task', subjectId: task.id, payload: { responsibilityId: task.responsibility_id, error: message } });
   return 'failed';
 }
@@ -310,7 +344,17 @@ export function abandonRun(run: Row, reason: string) {
   if (!task || task.state !== 'RUNNING') return;
   const step = q.get('SELECT * FROM task_steps WHERE task_id = ? AND idx = ?', task.id, task.current_step);
   if (step?.state === 'running') update('task_steps', step.id, { state: 'pending' });
-  setState(task.id, 'RECOVERING', { now_line: 'Recovering from the last checkpoint' });
+  const recoveries = task.recoveries + 1;
+  if (recoveries >= POISON_THRESHOLD) {
+    // The same task keeps taking the worker down with it: quarantine it so everything else keeps running.
+    const diagnosis = diagnose(new Error(`keeps crashing the worker (${recoveries} times, last during “${step?.title ?? 'a step'}”)`), 'permanent', 'Quarantined');
+    setState(task.id, 'FAILED', { recoveries, diagnosis, error: 'Quarantined after repeated crashes', completed_at: now(), attention: 'problem', now_line: 'Quarantined after repeated crashes' });
+    activity('problem', `Quarantined “${task.title}”`, { taskId: task.id, responsibilityId: task.responsibility_id, detail: diagnosis });
+    notify('attention', `AUDA quarantined “${task.title}”`, diagnosis, { type: 'task', id: task.id });
+    emit('task.failed', { subjectType: 'task', subjectId: task.id, payload: { responsibilityId: task.responsibility_id, error: 'quarantined' } });
+    return;
+  }
+  setState(task.id, 'RECOVERING', { recoveries, now_line: 'Recovering from the last checkpoint' });
   activity('recover', `Recovering “${task.title}”`, {
     taskId: task.id, responsibilityId: task.responsibility_id, spaceId: task.space_id,
     detail: `${reason}. Resuming from step ${task.current_step + 1}${step ? ` (“${step.title}”)` : ''}; completed steps are not repeated.`,
@@ -327,10 +371,10 @@ export function abandonRun(run: Row, reason: string) {
 let narrationHook: (taskId: string, text: string) => void = () => {};
 export const onNarration = (fn: typeof narrationHook) => { narrationHook = fn; };
 
-function makeCtx(task: Row, stepIdx: number, vars: Record<string, any>): StepCtx {
+function makeCtx(task: Row, stepIdx: number, vars: Record<string, any>, signal: AbortSignal): StepCtx {
   const meta = { taskId: task.id, responsibilityId: task.responsibility_id, spaceId: task.space_id };
   return {
-    task, input: json(task.input_json, {}), vars, stepIdx,
+    task, input: json(task.input_json, {}), vars, stepIdx, signal,
     narrate(text) {
       update('tasks', task.id, { now_line: text, updated_at: now() });
       changed('task', task.id);

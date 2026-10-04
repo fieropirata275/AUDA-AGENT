@@ -24,7 +24,7 @@ const c = (x: Capability) => x;
 export const capabilities: Record<string, Capability> = Object.fromEntries([
   c({ id: 'terminal.read', title: 'Run read-only commands', group: 'Computer', level: 'autonomous', risk: 'read',
       describe: (i) => `run \`${i.cmd}\``, resource: (i) => i.cwd }),
-  c({ id: 'terminal.write', title: 'Run commands that change files', group: 'Computer', level: 'rule', risk: 'reversible',
+  c({ id: 'terminal.write', title: 'Run commands that change files', group: 'Computer', level: 'autonomous', risk: 'reversible',
       describe: (i) => `run \`${i.cmd}\``, resource: (i) => i.cwd }),
   c({ id: 'terminal.destructive', title: 'Run destructive commands', group: 'Computer', level: 'approval', risk: 'destructive',
       describe: (i) => `run \`${i.cmd}\``, resource: (i) => i.cwd }),

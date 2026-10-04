@@ -15,6 +15,7 @@ import { ago, until, bytes, clock } from '../lib/time';
 import { Morph } from '../motion/Morph';
 import { fm } from '../motion/spring';
 import type { Artifact } from '../lib/types';
+import { AssignWork } from './AssignWork';
 
 function StepList({ steps, current, state }: { steps: any[]; current: number; state: string }) {
   return (
@@ -67,7 +68,7 @@ function TaskSheet({ id }: { id: string }) {
             {task.state === 'FAILED' && (
               <div className="trouble">
                 <div className="title" style={{ fontSize: 16 }}>AUDA hit a problem</div>
-                <p>{task.error}</p>
+                <p>{task.diagnosis ?? task.error}</p>
                 <div className="row"><Button size="sm" variant="primary" icon="recover" onClick={() => post(`/api/tasks/${id}/resume`)}>Try again</Button><Button size="sm" onClick={() => location.assign('/computer')}>Open computer</Button></div>
               </div>
             )}
@@ -75,17 +76,41 @@ function TaskSheet({ id }: { id: string }) {
               <div className="trouble"><p style={{ marginTop: 0 }}>{task.error}</p><div className="row"><Button size="sm" onClick={() => post(`/api/tasks/${id}/resume`)}>Try again</Button><Button size="sm" variant="ghost" onClick={() => post(`/api/tasks/${id}/cancel`)}>Stop task</Button></div></div>
             )}
             <AnimatePresence>{pending.map((a) => <ApprovalCard key={a.id} a={a} />)}</AnimatePresence>
+            {task.verification && (
+              <div className={`review r-${task.verification.verdict}`}>
+                <Morph shape={task.verification.verdict === 'pass' ? 'check' : task.verification.verdict === 'fail' ? 'attention' : 'dots'} size={18} color={task.verification.verdict === 'pass' ? 'var(--settled)' : 'var(--attention)'} animate={false} />
+                <div className="grow">
+                  <div style={{ fontWeight: 600 }}>{task.verification.verdict === 'pass' ? 'Independently reviewed — meets the criteria' : task.verification.verdict === 'fail' ? `Review found issues${active ? ' — AUDA is fixing them' : ''}` : 'Not reviewed'}</div>
+                  <div className="small muted">{task.verification.summary}{task.verification.round > 1 ? ` · review round ${task.verification.round}` : ''}</div>
+                  {task.verification.issues?.length > 0 && <ul className="small">{task.verification.issues.map((i: string, k: number) => <li key={k}>{i}</li>)}</ul>}
+                </div>
+              </div>
+            )}
             <dl className="kv">
-              {task.goal && <><dt>Goal</dt><dd>{task.goal}</dd></>}
+              {task.goal && task.goal !== task.title && <><dt>Goal</dt><dd>{task.goal}</dd></>}
+              {task.criteria && <><dt>Done when</dt><dd>{task.criteria}</dd></>}
               <dt>Why it exists</dt>
-              <dd>{resp ? <button className="link" onClick={() => openSheet({ type: 'responsibility', id: resp.id })}>Part of “{resp.title}”</button> : task.origin?.type === 'chat' ? 'You asked in chat' : task.origin?.type === 'user' ? 'You created it' : 'AUDA started it'}</dd>
+              <dd>{task.parentTaskId ? <button className="link" onClick={() => openSheet({ type: 'task', id: task.parentTaskId! })}>Subtask of “{s.tasks[task.parentTaskId]?.title ?? 'a larger task'}”</button> : resp ? <button className="link" onClick={() => openSheet({ type: 'responsibility', id: resp.id })}>Part of “{resp.title}”</button> : task.origin?.type === 'chat' ? 'You asked in chat' : task.origin?.type === 'user' ? 'You created it' : 'AUDA started it'}</dd>
               <dt>Started</dt><dd>{task.startedAt ? `${ago(task.startedAt)} · ${clock(task.startedAt)}` : task.nextEventAt ? until(task.nextEventAt) : 'Not yet'}</dd>
               {task.retryCount > 0 && <><dt>Retries</dt><dd>{task.retryCount} of {task.maxRetries}</dd></>}
             </dl>
             <div>
               <div className="label" style={{ marginBottom: 8 }}>Plan</div>
-              <StepList steps={task.steps} current={task.currentStep} state={task.state} />
+              {task.playbook === 'agent'
+                ? (task.plan?.length ? <StepList steps={task.plan.map((p: any, i: number) => ({ idx: i, title: p.title, state: p.status === 'doing' ? 'running' : p.status === 'done' ? 'done' : p.status === 'skipped' ? 'skipped' : 'pending', attempts: 1 }))} current={-1} state={task.state} />
+                  : <div className="small faint">{active ? 'AUDA hasn’t published a plan yet.' : 'No plan was needed.'}</div>)
+                : <StepList steps={task.steps} current={task.currentStep} state={task.state} />}
             </div>
+            {task.children?.length > 0 && (
+              <div>
+                <div className="label" style={{ marginBottom: 8 }}>Sub-agents working on parts of this</div>
+                <div className="stack">{task.children.map((c: any) => (
+                  <button key={c.id} className="hist-row" onClick={() => openSheet({ type: 'task', id: c.id })}>
+                    <TaskGlyph state={c.state} size={18} /><div className="grow" style={{ textAlign: 'left' }}><div style={{ fontWeight: 550 }}>{c.title}</div><div className="small faint">{s.tasks[c.id]?.result ?? s.tasks[c.id]?.nowLine ?? TASK_LABEL[c.state]}</div></div>
+                  </button>
+                ))}</div>
+              </div>
+            )}
             {detail?.artifacts?.length > 0 && (
               <div>
                 <div className="label" style={{ marginBottom: 8 }}>What it produced</div>
@@ -109,11 +134,14 @@ function TaskSheet({ id }: { id: string }) {
               <dt>Playbook</dt><dd className="mono">{detail.playbook}</dd>
               <dt>State</dt><dd className="mono">{detail.state}</dd>
               <dt>Model cost</dt><dd>{detail.cost ? `$${detail.cost.toFixed(4)}` : 'none'}</dd>
+              <dt>Crash recoveries</dt><dd>{detail.recoveries}</dd>
+              <dt>Depth</dt><dd>{detail.depth === 0 ? 'top-level' : `sub-agent (level ${detail.depth})`}</dd>
             </dl>
             <div><div className="label">Actions & authority (audit)</div>
               <table className="table small"><tbody>{detail.audit.map((x: any) => <tr key={x.id}><td className="tnum faint">{clock(x.ts)}</td><td className="mono">{x.capability}</td><td>{x.detail}</td><td><span className={`chip ${x.result === 'ok' ? 'settled' : x.result === 'deduplicated' ? '' : 'problem'}`}>{x.decision.split(':')[0]}</span></td></tr>)}</tbody></table>
               {!detail.audit.length && <div className="faint small">No side effects yet — only reading.</div>}
             </div>
+            {detail.playbook === 'agent' && <div><div className="label">Turns</div><StepList steps={detail.steps} current={detail.currentStep} state={detail.state} /></div>}
             <div><div className="label">Runs (durable execution)</div>
               <table className="table small"><tbody>{detail.runs.map((r: any, i: number) => <tr key={i}><td>#{r.attempt}</td><td className="mono">{r.worker_id}</td><td>{r.outcome ?? r.state}</td><td className="faint">{r.error}</td></tr>)}</tbody></table>
             </div>
@@ -236,6 +264,7 @@ export function Sheets() {
       {sheet?.type === 'task' && <TaskSheet key={sheet.id} id={sheet.id} />}
       {sheet?.type === 'responsibility' && <RespSheet key={sheet.id} id={sheet.id} />}
       {sheet?.type === 'artifact' && <ArtifactSheet key={sheet.id} id={sheet.id} />}
+      {sheet?.type === 'assign' && <AssignWork />}
     </Sheet>
   );
 }

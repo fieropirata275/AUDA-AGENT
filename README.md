@@ -64,12 +64,34 @@ npm run dev          # UI on http://localhost:5173, API on :4610
    second approval AUDA **suggests a rule** so it can handle it without asking next time.
 6. **Computer → Reliability → Freeze the browser** to watch the supervisor recover it.
 
-The same story runs headless as a test:
+### Assign hard work
+
+**Work → Assign work**: say what to do, add details, and — most importantly —
+**done when**. AUDA publishes a live plan, splits independent parts across
+parallel sub-agents, asks only for real decisions, and has the result
+independently reviewed against your criteria before calling it finished.
+(Open-ended work needs Claude connected; everything else works offline.)
+
+### Tests
 
 ```bash
-npm test             # unit tests: scheduler, rules compiler, policy, broker idempotency, memory
-npm run e2e          # end-to-end vertical slice against a real core (~2 min)
+npm test               # unit tests: scheduler, rules, policy, broker idempotency, memory, reminders
+npm run e2e:slice      # the vertical slice above, headless
+npm run e2e:agent      # agent path with a scripted model: review/revise, sub-agents, loops, approvals, crash mid-command
+npm run e2e:reliability# platform drills: DB corruption restore, poison quarantine, frozen-core watchdog, crash loop → safe mode
+npm run e2e            # all three
 ```
+
+## Reliability
+
+AUDA can't promise nothing ever fails; it is built so failures are expected,
+detected, contained, recovered where safe, and explained when not — step time
+budgets, error classification, idempotent actions, poison-task quarantine, an
+event outbox, a watchdog with safe mode, automatic backups with corruption
+restore, and agent guards (review before done, loop detection, context handoff,
+output capping, untrusted content). The full matrix, with the test for each
+defence, is in [`docs/ARCHITECTURE.md` §11](docs/ARCHITECTURE.md#11-reliability-model).
+Live state: **Settings → Reliability**.
 
 ## Configuration
 
@@ -83,6 +105,9 @@ npm run e2e          # end-to-end vertical slice against a real core (~2 min)
 | `ANTHROPIC_API_KEY` | — | Optional; Claude can also be connected in the UI |
 | `AUDA_CHROMIUM` | auto-detected | Chromium executable for AUDA's browser |
 | `AUDA_COMPUTER_DRIVER` | `local` | `local` · `docker` · `ssh` |
+| `AUDA_MAX_RSS_MB` | `2048` | Supervisor restarts the core gracefully above this |
+| `AUDA_STEP_TIMEOUT_MS` | `600000` | Default time budget per task step |
+| `AUDA_AGENT_MAX_TURNS` | `80` | Hard cap on model turns per agent task |
 
 ## Deploying
 

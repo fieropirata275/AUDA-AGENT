@@ -5,6 +5,8 @@ export interface Task {
   id: string; title: string; goal?: string; state: string; playbook: string; spaceId?: string; responsibilityId?: string; nowLine?: string;
   currentStep: number; stepCount: number; attention?: string | null; priority: number; result?: string; error?: string; retryCount: number; maxRetries: number;
   nextEventAt?: number; waitingOn?: string; cost: number; createdAt: number; startedAt?: number; completedAt?: number; updatedAt: number; origin: any; steps: Step[];
+  parentTaskId?: string; depth: number; plan: { title: string; status: string }[]; verification: { verdict: 'pass' | 'fail' | 'unknown'; issues: string[]; summary: string; round: number } | null;
+  diagnosis?: string; recoveries: number; criteria?: string | null; children: { id: string; title: string; state: string }[];
 }
 export interface Watcher { id: string; kind: string; description: string; intervalSec: number; lastValue?: string; lastCheckedAt?: number; nextCheckAt?: number; enabled: boolean; errors: number; history: [number, number][] | null; armed: boolean | null }
 export interface Schedule { id: string; ownerType: string; ownerId: string; kind: string; spec: string; description: string; nextRunAt?: number; windowEnd?: number; lastRunAt?: number; enabled: boolean }
@@ -37,5 +39,5 @@ export interface Capability { id: string; title: string; group: string; risk: st
 export interface Settings {
   notificationPrefs: Record<string, string>; notificationWebhook: string; sound: boolean; concurrency: number;
   models: { roles: Record<string, { provider: string; model: string }>; dailyBudget?: number; monthlyBudget?: number; local?: { baseUrl: string; model: string }; anthropicConnected: boolean; anthropicFromEnv: boolean };
-  spend: { today: number; month: number }; capabilities: Capability[];
+  spend: { today: number; month: number }; capabilities: Capability[]; agentVerify: boolean; agentWebSearch: boolean;
 }

@@ -28,6 +28,10 @@ import { playbooks } from '../playbooks/types.ts';
 import { supervisorState } from '../supervisor/supervisor.ts';
 import { parseSchedule } from '../scheduler/fuzzy.ts';
 import { checkNow } from '../watchers/runner.ts';
+import { system } from '../core/system.ts';
+import { busStats } from '../core/bus.ts';
+import { backup, bootReport, listBackups } from '../core/db.ts';
+import { browserQueue } from '../computer/browser.ts';
 
 type Req = http.IncomingMessage & { body?: any; params: Record<string, string>; query: URLSearchParams };
 type Handler = (req: Req, res: http.ServerResponse) => Promise<any> | any;
@@ -74,6 +78,7 @@ route('GET', '/api/bootstrap', () => {
     lastSeen: getSetting('user.lastSeen', null),
     publicUrl: config.publicUrl,
     supervisor: supervisorState,
+    safeMode: system.safeMode,
   };
 });
 
@@ -114,7 +119,11 @@ route('POST', '/api/tasks/:id/pause', (req) => { pauseTask(req.params.id); retur
 route('POST', '/api/tasks/:id/resume', (req) => { resumeTask(req.params.id); return { ok: true }; });
 route('POST', '/api/tasks', (req) => {
   const s = req.body?.when ? parseSchedule(req.body.when) : null;
-  return { id: createTask({ title: req.body.title, goal: req.body.goal, playbook: req.body.playbook ?? 'agent', input: req.body.input ?? {}, spaceId: req.body.spaceId, runAt: s?.nextRunAt, origin: { type: 'user' } }) };
+  const title = String(req.body?.title ?? '').trim();
+  if (!title) throw new HttpError(400, 'Give the task a title');
+  if (req.body?.when && !s) throw new HttpError(400, `I couldn’t understand “${req.body.when}” as a time`);
+  const input = { ...(req.body.input ?? {}), ...(req.body.criteria ? { criteria: String(req.body.criteria) } : {}) };
+  return { id: createTask({ title, goal: req.body.goal || title, playbook: req.body.playbook ?? 'agent', input, spaceId: req.body.spaceId, runAt: s?.nextRunAt, priority: req.body.priority, deadlineAt: req.body.deadlineAt, origin: { type: 'user' } }) };
 });
 route('POST', '/api/responsibilities', (req) => ({ id: createResponsibility({ ...req.body, origin: { type: 'user' } }) }));
 route('POST', '/api/responsibilities/:id/:action', async (req) => {
@@ -251,6 +260,8 @@ route('PUT', '/api/settings/:key', (req) => {
     'notifications.webhook': (x) => setSetting('notifications.webhook', String(x ?? '')),
     'ui.sound': (x) => setSetting('ui.sound', !!x),
     'engine.concurrency': (x) => setSetting('engine.concurrency', Math.max(1, Math.min(8, Number(x)))),
+    'agent.verify': (x) => setSetting('agent.verify', !!x),
+    'agent.webSearch': (x) => setSetting('agent.webSearch', !!x),
     'models': (x) => { const cur = getSetting<any>('models', {}); setSetting('models', { ...cur, roles: x.roles ?? cur.roles, dailyBudget: x.dailyBudget ?? cur.dailyBudget, monthlyBudget: x.monthlyBudget ?? cur.monthlyBudget, local: x.local ?? cur.local }); },
     'identity': (x) => { const id = q.get('SELECT id FROM identity LIMIT 1')!.id; update('identity', id, { user_name: x.userName }); changed('identity', id); },
   };
@@ -273,7 +284,23 @@ route('POST', '/api/spaces', (req) => {
   changed('space', id);
   return { id };
 });
-route('GET', '/api/health', () => ({ ok: true, supervisor: supervisorState, time: now() }));
+route('GET', '/api/health', () => ({ ok: true, pid: process.pid, safeMode: system.safeMode, rssMb: Math.round(process.memoryUsage().rss / 1048576), loopLagMs: system.loopLagMs, time: now() }));
+route('GET', '/api/system', () => ({
+  ...system, uptimeMs: now() - system.startedAt, rssMb: Math.round(process.memoryUsage().rss / 1048576), heapMb: Math.round(process.memoryUsage().heapUsed / 1048576),
+  supervisor: supervisorState, bus: busStats, boot: bootReport, backups: listBackups().slice(0, 12), browserQueue: browserQueue.waiting,
+  quarantined: q.all("SELECT id, title, diagnosis, completed_at FROM tasks WHERE error = 'Quarantined after repeated crashes' ORDER BY completed_at DESC LIMIT 10"),
+  recentRecoveries: q.get("SELECT COUNT(*) n FROM activity WHERE kind = 'recover' AND ts > ?", now() - 86400_000)!.n,
+  failedToday: q.get("SELECT COUNT(*) n FROM tasks WHERE state = 'FAILED' AND completed_at > ?", now() - 86400_000)!.n,
+  pendingEvents: q.get('SELECT COUNT(*) n FROM events WHERE dispatched = 0')!.n,
+}));
+route('POST', '/api/system/backup', () => { system.lastBackup = backup(); activity('user', 'You made a backup', { detail: system.lastBackup }); return { name: system.lastBackup }; });
+route('POST', '/api/system/leave-safe-mode', () => {
+  if (!system.safeMode) return { ok: true };
+  if (!system.supervised) throw new HttpError(409, 'Restart AUDA without AUDA_SAFE_MODE to leave safe mode.');
+  activity('user', 'You asked AUDA to leave safe mode');
+  setTimeout(() => process.exit(75), 300);
+  return { ok: true, restarting: true };
+});
 
 // ─── inbound hooks ───────────────────────────────────────────────────────────
 
