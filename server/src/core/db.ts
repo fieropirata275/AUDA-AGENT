@@ -60,6 +60,13 @@ ensureColumn('tasks', 'inbox_json', "TEXT NOT NULL DEFAULT '[]'");
 ensureColumn('messages', 'author_type', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('messages', 'author_id', 'TEXT');
 ensureColumn('messages', 'attachments_json', "TEXT NOT NULL DEFAULT '[]'");
+ensureColumn('tasks', 'owner_id', 'TEXT');
+ensureColumn('tasks', 'agent_id', 'TEXT');
+ensureColumn('tasks', 'rating', 'INTEGER');
+ensureColumn('clients', 'user_id', 'TEXT');
+ensureColumn('messages', 'user_id', 'TEXT');
+ensureColumn('conversations', 'user_id', 'TEXT');
+ensureColumn('memories', 'user_id', 'TEXT');
 db.exec('CREATE INDEX IF NOT EXISTS events_pending ON events(dispatched, created_at)');
 db.exec('CREATE INDEX IF NOT EXISTS tasks_parent ON tasks(parent_task_id)');
 

@@ -411,3 +411,138 @@ CREATE TABLE IF NOT EXISTS pairings (
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL
 );
+
+-- ─── Organization ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  role TEXT NOT NULL,            -- owner|admin|member
+  password_hash TEXT,
+  created_at INTEGER NOT NULL,
+  last_seen_at INTEGER,
+  disabled INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  user_agent TEXT
+);
+CREATE TABLE IF NOT EXISTS invites (
+  id TEXT PRIMARY KEY,
+  code_hash TEXT NOT NULL,
+  email TEXT,
+  role TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  used_by TEXT
+);
+
+-- ─── Plugins (external apps over OAuth / API keys / MCP) ─────────────────────
+CREATE TABLE IF NOT EXISTS plugins (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,            -- openapi|mcp
+  preset TEXT,
+  description TEXT,
+  icon TEXT,
+  config_json TEXT NOT NULL,     -- auth + base url + tools (no secrets)
+  client_secret_ref TEXT,        -- OAuth client secret (secret broker)
+  created_by TEXT,
+  visibility TEXT NOT NULL DEFAULT 'org',
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS plugin_connections (
+  id TEXT PRIMARY KEY,
+  plugin_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  state TEXT NOT NULL,           -- connected|expired|error
+  token_ref TEXT,                -- secret broker: access token
+  refresh_ref TEXT,              -- secret broker: refresh token
+  expires_at INTEGER,
+  account TEXT,
+  scopes TEXT,
+  error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(plugin_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS oauth_states (
+  state TEXT PRIMARY KEY,
+  plugin_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  verifier TEXT NOT NULL,
+  redirect_uri TEXT NOT NULL,
+  return_to TEXT,
+  created_at INTEGER NOT NULL
+);
+
+-- ─── Custom agents, knowledge and learning ───────────────────────────────────
+CREATE TABLE IF NOT EXISTS agents (
+  id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  emoji TEXT,
+  color TEXT,
+  description TEXT,
+  instructions TEXT NOT NULL,
+  config_json TEXT NOT NULL DEFAULT '{}',   -- plugins, tools, model, autonomy, sources, study schedule
+  visibility TEXT NOT NULL DEFAULT 'private', -- private|org
+  template TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  archived INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS kb_documents (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  source TEXT NOT NULL,          -- upload|url|note|lesson|skill|task
+  source_ref TEXT,
+  kind TEXT NOT NULL DEFAULT 'doc',  -- doc|lesson|skill
+  chars INTEGER NOT NULL DEFAULT 0,
+  confidence REAL NOT NULL DEFAULT 1,
+  uses INTEGER NOT NULL DEFAULT 0,
+  helpful INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL DEFAULT 'ready', -- ready|error|indexing
+  error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS kb_chunks (
+  id TEXT PRIMARY KEY,
+  doc_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  idx INTEGER NOT NULL,
+  text TEXT NOT NULL,
+  vector BLOB,
+  embedder TEXT,
+  uses INTEGER NOT NULL DEFAULT 0,
+  helpful INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS kb_chunks_agent ON kb_chunks(agent_id);
+CREATE VIRTUAL TABLE IF NOT EXISTS kb_fts USING fts5(chunk_id UNINDEXED, agent_id UNINDEXED, text);
+CREATE TABLE IF NOT EXISTS agent_feedback (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  task_id TEXT,
+  user_id TEXT,
+  rating INTEGER NOT NULL,       -- +1 / -1
+  comment TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS retrievals (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  task_id TEXT,
+  query TEXT NOT NULL,
+  chunk_id TEXT NOT NULL,
+  features_json TEXT NOT NULL,
+  label REAL,                    -- 1 used/helpful, 0 not; null = unknown yet
+  trained INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS retrievals_task ON retrievals(task_id);

@@ -37,6 +37,9 @@ import './playbooks/webWatch.ts';
 import './playbooks/routines.ts';
 import './playbooks/githubCi.ts';
 import './playbooks/agent.ts';
+import { ensureOwner } from './org/users.ts';
+import { initPlugins } from './plugins/runtime.ts';
+import { initLearning } from './agents/learning.ts';
 
 process.removeAllListeners('warning');
 
@@ -51,6 +54,7 @@ function firstBoot() {
 }
 
 const fresh = firstBoot();
+ensureOwner();
 initComputer();
 ensureConnector('computer', 'AUDA’s Computer', 'connected', `${config.computerDriver} driver · persistent workspace`);
 ensureConnector('webhook', 'Webhooks', 'connected', `${config.publicUrl}/hooks/<name>`);
@@ -62,6 +66,8 @@ initDevices();
 initLmStudio();
 initGroup();
 registerTool('notify.user', async (i) => ({ id: notify(i.level ?? 'fyi', i.title, i.body) }));
+initPlugins();
+initLearning();
 initResponsibilities();
 initPresence();
 if (bootReport.integrity === 'restored') activity('recover', 'Restored the database from a backup', { detail: `The database failed its integrity check on startup (${bootReport.detail}). AUDA restored ${bootReport.restoredFrom} and kept the damaged copy for inspection. Anything after that backup may need redoing.` });

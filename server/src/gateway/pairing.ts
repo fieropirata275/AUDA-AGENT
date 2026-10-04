@@ -12,6 +12,8 @@ import { changed } from '../core/changes.ts';
 import { activity } from '../core/activity.ts';
 import { notify } from '../notifications/service.ts';
 import { requiresPairing } from './discovery.ts';
+import { currentUserId, OWNER_ID } from '../core/context.ts';
+import { orgEnabled, sessionUser, tokenFrom } from '../org/users.ts';
 
 const sha = (s: string) => crypto.createHash('sha256').update(s).digest('hex');
 const TTL = 10 * 60_000;
@@ -47,7 +49,7 @@ export function decidePairing(id: string, approve: boolean) {
   if (!approve) { update('pairings', id, { state: 'rejected' }); changed('pairing' as any, id); activity('user', `You declined ${p.name}`); return; }
   const token = crypto.randomBytes(32).toString('base64url');
   const clientId = uid('cli');
-  insert('clients', { id: clientId, name: p.name, platform: p.platform, token_hash: sha(token), created_at: now() });
+  insert('clients', { id: clientId, name: p.name, platform: p.platform, token_hash: sha(token), user_id: currentUserId(), created_at: now() });
   update('pairings', id, { state: 'approved', client_id: clientId, token });
   changed('pairing' as any, id); changed('client' as any, clientId);
   activity('user', `You paired ${p.name}`, { detail: 'It can chat, supervise work and assign tasks. Revoke it any time in Connections.' });
@@ -69,14 +71,20 @@ export function clientForToken(token: string | undefined) {
 
 const isLoopback = (req: http.IncomingMessage) => /^(::1|127\.|::ffff:127\.)/.test(req.socket.remoteAddress ?? '');
 
-/** Access rule: AUDA_TOKEN or a paired client's token; without required pairing the LAN is trusted; the local desktop always is (unless AUDA_TOKEN is set). */
-export function authorize(req: http.IncomingMessage, url: URL, masterToken?: string) {
-  const cookie = /(?:^|;\s*)auda_token=([^;]+)/.exec(req.headers.cookie ?? '')?.[1];
-  const bearer = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization ?? ''))?.[1];
-  const given = (req.headers['x-auda-token'] as string | undefined) ?? bearer ?? url.searchParams.get('token') ?? (cookie ? decodeURIComponent(cookie) : undefined);
-  if (masterToken && given && given.length === masterToken.length && crypto.timingSafeEqual(Buffer.from(given), Buffer.from(masterToken))) return true;
-  if (clientForToken(given)) return true;
-  if (masterToken) return false;
-  if (!requiresPairing()) return true;
-  return isLoopback(req);
+/**
+ * Who is calling? A session (signed-in member), a paired app's token, or
+ * AUDA_TOKEN. Without an organization, a trusted LAN/desktop is the owner.
+ * Returns null when the caller must sign in or pair first.
+ */
+export function resolveUser(req: http.IncomingMessage, url: URL, masterToken?: string): string | null {
+  const given = tokenFrom(req, url);
+  if (masterToken && given && given.length === masterToken.length && crypto.timingSafeEqual(Buffer.from(given), Buffer.from(masterToken))) return OWNER_ID;
+  const s = sessionUser(given);
+  if (s) return s.id;
+  const c = clientForToken(given);
+  if (c) return c.user_id ?? OWNER_ID;
+  if (masterToken || orgEnabled()) return null;
+  if (!requiresPairing()) return OWNER_ID;
+  return isLoopback(req) ? OWNER_ID : null;
 }
+export function authorize(req: http.IncomingMessage, url: URL, masterToken?: string) { return resolveUser(req, url, masterToken) !== null; }

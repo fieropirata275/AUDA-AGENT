@@ -6,6 +6,7 @@
  */
 import type Anthropic from '@anthropic-ai/sdk';
 import { insert, now, q, uid, update } from '../core/db.ts';
+import { currentUserId } from '../core/context.ts';
 import { changed } from '../core/changes.ts';
 import { emit } from '../core/bus.ts';
 import { activity } from '../core/activity.ts';
@@ -23,7 +24,7 @@ import { parseSchedule } from '../scheduler/fuzzy.ts';
 export function ensureConversation(id?: string, spaceId?: string | null, channel = 'web') {
   if (id && q.get('SELECT id FROM conversations WHERE id = ?', id)) return id;
   const cid = id ?? uid('conv');
-  insert('conversations', { id: cid, space_id: spaceId ?? undefined, channel, title: 'Conversation', created_at: now(), updated_at: now() });
+  insert('conversations', { id: cid, space_id: spaceId ?? undefined, channel, title: 'Conversation', user_id: currentUserId(), created_at: now(), updated_at: now() });
   changed('conversation', cid);
   return cid;
 }

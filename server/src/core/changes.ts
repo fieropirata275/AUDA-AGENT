@@ -5,7 +5,8 @@
 export type Entity =
   | 'identity' | 'task' | 'responsibility' | 'approval' | 'activity' | 'memory' | 'artifact'
   | 'connector' | 'notification' | 'rule' | 'computer' | 'schedule' | 'watcher' | 'message'
-  | 'conversation' | 'space' | 'device' | 'settings' | 'pairing' | 'client';
+  | 'conversation' | 'space' | 'device' | 'settings' | 'pairing' | 'client'
+  | 'plugin' | 'agent' | 'member' | 'knowledge';
 
 type Listener = (batch: { entity: Entity; id: string; removed?: boolean }[]) => void;
 const listeners: Listener[] = [];

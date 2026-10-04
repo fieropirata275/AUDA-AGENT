@@ -23,6 +23,7 @@ import { decide } from '../policy/engine.ts';
 import { capabilities } from '../policy/capabilities.ts';
 import { BudgetExceeded } from '../models/router.ts';
 import { hash } from '../core/db.ts';
+import { currentUserId, runAs, OWNER_ID } from '../core/context.ts';
 
 export const WORKER_ID = `${os.hostname()}:${process.pid}:${uid('w').slice(2, 8)}`;
 const LEASE_MS = 30_000;
@@ -51,6 +52,8 @@ export interface CreateTask {
   runAt?: number;
   priority?: number;
   deadlineAt?: number;
+  ownerId?: string;
+  agentId?: string;
 }
 
 export function createTask(t: CreateTask): string {
@@ -58,7 +61,10 @@ export function createTask(t: CreateTask): string {
   const plan = pb.plan(t.input ?? {});
   const id = uid('task');
   const ts = now();
-  const depth = t.parentTaskId ? (q.get('SELECT depth FROM tasks WHERE id = ?', t.parentTaskId)?.depth ?? 0) + 1 : 0;
+  const parent = t.parentTaskId ? q.get('SELECT depth, owner_id, agent_id FROM tasks WHERE id = ?', t.parentTaskId) : undefined;
+  const depth = parent ? (parent.depth ?? 0) + 1 : 0;
+  const ownerId = t.ownerId ?? parent?.owner_id ?? currentUserId();
+  const agentId = t.agentId ?? parent?.agent_id ?? undefined;
   const scheduled = t.runAt && t.runAt > ts + 1000;
   tx(() => {
     insert('tasks', {
@@ -66,7 +72,7 @@ export function createTask(t: CreateTask): string {
       responsibility_id: t.responsibilityId, space_id: t.spaceId ?? undefined, parent_task_id: t.parentTaskId,
       origin_json: JSON.stringify(t.origin ?? {}), state: scheduled ? 'SCHEDULED' : 'READY',
       next_event_at: scheduled ? t.runAt : undefined, step_count: plan.length, priority: t.priority ?? 2,
-      deadline_at: t.deadlineAt, depth, now_line: scheduled ? `Scheduled for ${new Date(t.runAt!).toLocaleString()}` : 'Getting ready',
+      deadline_at: t.deadlineAt, depth, owner_id: ownerId, agent_id: agentId, now_line: scheduled ? `Scheduled for ${new Date(t.runAt!).toLocaleString()}` : 'Getting ready',
       created_at: ts, updated_at: ts,
     });
     plan.forEach((s, idx) => insert('task_steps', { id: uid('step'), task_id: id, idx, key: s.key, title: s.title, state: 'pending' }));
@@ -183,7 +189,9 @@ function tick() {
   for (const c of candidates) {
     const res = q.run("UPDATE tasks SET state = 'RUNNING', updated_at = ? WHERE id = ? AND state = ?", now(), c.id, c.state);
     if (res.changes !== 1) continue;
-    void runTask(c.id, c.state);
+    // Each task runs as the person it belongs to: their plugin connections, their memory.
+    const owner = q.get('SELECT owner_id FROM tasks WHERE id = ?', c.id)?.owner_id ?? OWNER_ID;
+    void runAs(owner, () => runTask(c.id, c.state));
   }
 }
 

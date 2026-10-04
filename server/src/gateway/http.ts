@@ -28,17 +28,22 @@ import { playbooks } from '../playbooks/types.ts';
 import { supervisorState } from '../supervisor/supervisor.ts';
 import { parseSchedule } from '../scheduler/fuzzy.ts';
 import { checkNow } from '../watchers/runner.ts';
-import { authorize, requestPairing, pairingStatus, decidePairing, revokeClient } from './pairing.ts';
+import { authorize, resolveUser, requestPairing, pairingStatus, decidePairing, revokeClient } from './pairing.ts';
 import { card } from './discovery.ts';
 import { detect as lmDetect, connect as lmConnect, disconnect as lmDisconnect } from '../connectors/lmstudio.ts';
 import { listModels } from '../models/openai.ts';
 import { agents, handleGroupMessage, messageAgent, saveUpload, GROUP_ID } from '../agent/group.ts';
 import { system } from '../core/system.ts';
+import { runAs, OWNER_ID, currentUserId } from '../core/context.ts';
+import { orgEnabled, orgName, members, getUser, userView } from '../org/users.ts';
+import { visiblePlugins, pluginView } from '../plugins/runtime.ts';
+import { visibleAgents, agentView } from '../agents/agents.ts';
+import { registerTeamRoutes } from './teamRoutes.ts';
 import { busStats } from '../core/bus.ts';
 import { backup, bootReport, listBackups } from '../core/db.ts';
 import { browserQueue } from '../computer/browser.ts';
 
-type Req = http.IncomingMessage & { body?: any; params: Record<string, string>; query: URLSearchParams };
+type Req = http.IncomingMessage & { body?: any; params: Record<string, string>; query: URLSearchParams; userId?: string };
 type Handler = (req: Req, res: http.ServerResponse) => Promise<any> | any;
 const routes: { method: string; re: RegExp; keys: string[]; fn: Handler; raw?: boolean; open?: boolean }[] = [];
 function route(method: string, pattern: string, fn: Handler, opts: { raw?: boolean; open?: boolean } = {}) {
@@ -51,12 +56,14 @@ const must = (v: any, msg = 'Not found'): any => { if (v == null) throw new Http
 
 export const authToken = process.env.AUDA_TOKEN;
 export function authorized(req: http.IncomingMessage, url: URL) { return authorize(req, url, authToken); }
+export function userFor(req: http.IncomingMessage, url: URL) { return resolveUser(req, url, authToken); }
 
 // ─── bootstrap ───────────────────────────────────────────────────────────────
 
-route('GET', '/api/bootstrap', () => {
+route('GET', '/api/bootstrap', (req) => {
   const ident = q.get('SELECT * FROM identity LIMIT 1')!;
-  return {
+  const me = req.userId ?? OWNER_ID;
+  const snap: Record<string, any> = {
     identity: V.identityView(ident),
     tasks: q.all(`SELECT * FROM tasks WHERE state NOT IN ('COMPLETED','FAILED','CANCELLED') OR completed_at > ? ORDER BY created_at DESC LIMIT 200`, now() - 14 * 86400_000).map(V.taskView),
     responsibilities: q.all('SELECT * FROM responsibilities ORDER BY created_at DESC').map(V.respView),
@@ -82,7 +89,16 @@ route('GET', '/api/bootstrap', () => {
     instance: card(),
     pairings: q.all("SELECT * FROM pairings WHERE state = 'pending' AND expires_at > ?", now()).map(V.pairingView),
     clients: q.all('SELECT * FROM clients WHERE revoked_at IS NULL ORDER BY created_at DESC').map(V.clientView),
+    me: userView(getUser(me)),
+    org: { enabled: orgEnabled(), name: orgName() },
+    members: members(),
+    plugins: visiblePlugins(me).map((p) => pluginView(p, me)),
+    customAgents: visibleAgents(me).map((a) => agentView(a, me)),
   };
+  // Each person sees their own work (admins supervise everything); the team room is shared.
+  const entityOf: Record<string, string> = { tasks: 'task', approvals: 'approval', memories: 'memory', notifications: 'notification', activity: 'activity', artifacts: 'artifact', conversations: 'conversation', pairings: 'pairing', clients: 'client' };
+  for (const [key, entity] of Object.entries(entityOf)) if (Array.isArray(snap[key])) snap[key] = snap[key].filter((d: any) => V.canSee(entity, d, me));
+  return snap;
 });
 
 // ─── chat ────────────────────────────────────────────────────────────────────
@@ -94,16 +110,23 @@ route('POST', '/api/chat', async (req) => {
   const reply = await handleUserMessage(cid, text, req.body?.channel ?? 'web');
   return { conversationId: cid, reply };
 });
-route('GET', '/api/conversations/:id/messages', (req) => q.all('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at', req.params.id).map(V.messageView));
+route('GET', '/api/conversations/:id/messages', (req) => !V.canSee('conversation', q.get('SELECT id, user_id AS userId FROM conversations WHERE id = ?', req.params.id), req.userId ?? OWNER_ID) ? [] : q.all('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at', req.params.id).map(V.messageView));
 
 // ─── work ────────────────────────────────────────────────────────────────────
 
+/** Members act only on their own work; owners and admins on everyone's. */
+function ownTask(req: Req, taskId: string | null | undefined) {
+  const t = taskId ? q.get('SELECT owner_id FROM tasks WHERE id = ?', taskId) : undefined;
+  if (t && !V.canSee('task', { ownerId: t.owner_id }, req.userId ?? OWNER_ID)) throw new HttpError(404, 'Not found');
+}
 route('POST', '/api/approvals/:id/decide', (req) => {
+  ownTask(req, q.get('SELECT task_id FROM approvals WHERE id = ?', req.params.id)?.task_id);
   const d = req.body?.decision;
   if (d !== 'approved' && d !== 'rejected') throw new HttpError(400, 'decision must be approved or rejected');
   return V.approvalView(must(decideApproval(req.params.id, d, req.body?.channel ?? 'web')));
 });
 route('GET', '/api/tasks/:id', (req) => {
+  ownTask(req, req.params.id);
   const t = must(q.get('SELECT * FROM tasks WHERE id = ?', req.params.id));
   return {
     ...V.taskView(t),
@@ -117,9 +140,9 @@ route('GET', '/api/tasks/:id', (req) => {
     stepOutputs: q.all('SELECT idx, output_json FROM task_steps WHERE task_id = ? ORDER BY idx', t.id).map((s) => ({ idx: s.idx, output: s.output_json ? JSON.parse(s.output_json) : null })),
   };
 });
-route('POST', '/api/tasks/:id/cancel', (req) => { cancelTask(req.params.id); return { ok: true }; });
-route('POST', '/api/tasks/:id/pause', (req) => { pauseTask(req.params.id); return { ok: true }; });
-route('POST', '/api/tasks/:id/resume', (req) => { resumeTask(req.params.id); return { ok: true }; });
+route('POST', '/api/tasks/:id/cancel', (req) => { ownTask(req, req.params.id); cancelTask(req.params.id); return { ok: true }; });
+route('POST', '/api/tasks/:id/pause', (req) => { ownTask(req, req.params.id); pauseTask(req.params.id); return { ok: true }; });
+route('POST', '/api/tasks/:id/resume', (req) => { ownTask(req, req.params.id); resumeTask(req.params.id); return { ok: true }; });
 route('POST', '/api/tasks', (req) => {
   const s = req.body?.when ? parseSchedule(req.body.when) : null;
   const title = String(req.body?.title ?? '').trim();
@@ -326,10 +349,12 @@ route('GET', '/api/group/messages', (req) => {
   return q.all('SELECT * FROM messages WHERE conversation_id = ? AND created_at < ? ORDER BY created_at DESC LIMIT 150', GROUP_ID, before).reverse().map(V.messageView);
 });
 route('POST', '/api/group', async (req) => {
+  for (const m of req.body?.mentions ?? []) if (typeof m === 'string' && m.startsWith('task_')) ownTask(req, m);
   try { return await handleGroupMessage({ text: String(req.body?.text ?? ''), attachments: req.body?.attachments, mentions: req.body?.mentions, channel: req.body?.channel ?? 'web', from: req.body?.from }); }
   catch (e) { throw new HttpError(400, (e as Error).message); }
 });
 route('POST', '/api/tasks/:id/message', (req) => {
+  ownTask(req, req.params.id);
   try { return messageAgent(req.params.id, String(req.body?.text ?? ''), req.body?.attachments ?? []); } catch (e) { throw new HttpError(404, (e as Error).message); }
 });
 route('POST', '/api/files', async (req) => {
@@ -346,7 +371,7 @@ route('GET', '/api/computer/download', (req, res) => {
   return undefined;
 });
 
-route('GET', '/api/health', () => ({ ok: true, pid: process.pid, safeMode: system.safeMode, rssMb: Math.round(process.memoryUsage().rss / 1048576), loopLagMs: system.loopLagMs, time: now() }));
+route('GET', '/api/health', () => ({ ok: true, pid: process.pid, safeMode: system.safeMode, rssMb: Math.round(process.memoryUsage().rss / 1048576), loopLagMs: system.loopLagMs, time: now() }), { open: true }); // the supervisor's watchdog must reach it without signing in
 route('GET', '/api/system', () => ({
   ...system, uptimeMs: now() - system.startedAt, rssMb: Math.round(process.memoryUsage().rss / 1048576), heapMb: Math.round(process.memoryUsage().heapUsed / 1048576),
   supervisor: supervisorState, bus: busStats, boot: bootReport, backups: listBackups().slice(0, 12), browserQueue: browserQueue.waiting,
@@ -395,6 +420,8 @@ route('GET', '/demo/supplier', (_req, res) => {
 });
 route('POST', '/api/demo/supplier', (req) => { demoPage = { ...demoPage, ...req.body }; return demoPage; });
 
+registerTeamRoutes(route, HttpError);
+
 // ─── server ──────────────────────────────────────────────────────────────────
 
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type, x-auda-token, authorization', 'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS' };
@@ -409,8 +436,10 @@ export function createServer() {
         const isHook = url.pathname.startsWith('/hooks/') || url.pathname.startsWith('/demo/');
         if (req.method === 'OPTIONS') { res.writeHead(204, CORS); res.end(); return; }
         const r = routes.find((x) => x.method === req.method && x.re.test(url.pathname));
-        if (!isHook && !r?.open && !authorized(req, url)) throw new HttpError(401, 'Unauthorized — pair this device first');
+        const userId = userFor(req, url);
+        if (!isHook && !r?.open && !userId) throw new HttpError(401, orgEnabled() ? 'Sign in to continue' : 'Unauthorized — pair this device first');
         if (!r) throw new HttpError(404, 'No such endpoint');
+        req.userId = userId ?? undefined;
         const m = r.re.exec(url.pathname)!;
         req.params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
         req.query = url.searchParams;
@@ -421,7 +450,7 @@ export function createServer() {
           (req as any).rawBody = raw;
           try { req.body = raw ? JSON.parse(raw) : {}; } catch { req.body = { raw }; }
         }
-        const out = await r.fn(req, res);
+        const out = await runAs(userId ?? OWNER_ID, () => r.fn(req, res));
         if (out !== undefined && !res.headersSent) { res.writeHead(200, { 'content-type': 'application/json', ...CORS }); res.end(JSON.stringify(out)); }
         return;
       }

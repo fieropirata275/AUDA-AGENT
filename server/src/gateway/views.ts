@@ -8,6 +8,9 @@ import { CATALOG } from '../connectors/runtime.ts';
 import { getSetting } from '../core/db.ts';
 import { DEFAULT_PREFS } from '../notifications/service.ts';
 import { modelSettings, providerReady, spend } from '../models/router.ts';
+import { getPlugin, pluginView } from '../plugins/runtime.ts';
+import { agentView } from '../agents/agents.ts';
+import { userView } from '../org/users.ts';
 
 export const taskView = (t: Row) => ({
   id: t.id, title: t.title, goal: t.goal, state: t.state, playbook: t.playbook, spaceId: t.space_id, responsibilityId: t.responsibility_id,
@@ -15,7 +18,8 @@ export const taskView = (t: Row) => ({
   result: t.result_summary, error: t.error, retryCount: t.retry_count, maxRetries: t.max_retries, nextEventAt: t.next_event_at,
   waitingOn: t.waiting_on, cost: t.cost_micro / 1e6, createdAt: t.created_at, startedAt: t.started_at, completedAt: t.completed_at,
   updatedAt: t.updated_at, origin: json(t.origin_json, {}),
-  parentTaskId: t.parent_task_id, depth: t.depth ?? 0, plan: json(t.plan_json, []), verification: json(t.verification_json, null),
+  parentTaskId: t.parent_task_id, depth: t.depth ?? 0, ownerId: t.owner_id, agentId: t.agent_id, rating: t.rating,
+  agent: t.agent_id ? q.get('SELECT id, name, emoji, color FROM agents WHERE id = ?', t.agent_id) ?? null : null, plan: json(t.plan_json, []), verification: json(t.verification_json, null),
   diagnosis: t.diagnosis, recoveries: t.recoveries ?? 0, criteria: json<any>(t.input_json, {}).criteria ?? null,
   children: q.all('SELECT id, title, state FROM tasks WHERE parent_task_id = ? ORDER BY created_at', t.id),
   steps: q.all('SELECT idx, key, title, state, narration, started_at, ended_at, attempts FROM task_steps WHERE task_id = ? ORDER BY idx', t.id)
@@ -50,7 +54,7 @@ export const activityView = (a: Row) => ({ id: a.id, ts: a.ts, kind: a.kind, tit
 export const memoryView = (m: Row) => ({
   id: m.id, kind: m.kind, title: m.title, content: m.content, source: m.source, sourceRef: m.source_ref, confidence: m.confidence, scope: m.scope,
   spaceId: m.space_id, responsibilityId: m.responsibility_id, weight: m.weight, pinned: !!m.pinned, sensitivity: m.sensitivity,
-  expiresAt: m.expires_at, reinforced: m.reinforced, supersededBy: m.superseded_by, createdAt: m.created_at, updatedAt: m.updated_at, data: json(m.data_json, {}),
+  expiresAt: m.expires_at, reinforced: m.reinforced, userId: m.user_id, supersededBy: m.superseded_by, createdAt: m.created_at, updatedAt: m.updated_at, data: json(m.data_json, {}),
 });
 export const artifactView = (a: Row) => ({
   id: a.id, name: a.name, path: a.path, mime: a.mime, size: a.size, why: a.why, taskId: a.task_id, responsibilityId: a.responsibility_id, spaceId: a.space_id, createdAt: a.created_at,
@@ -71,7 +75,7 @@ export const messageView = (m: Row) => {
   };
 };
 export const pairingView = (p: Row) => ({ id: p.id, name: p.name, platform: p.platform, code: p.code, state: p.state, createdAt: p.created_at, expiresAt: p.expires_at });
-export const clientView = (c: Row) => ({ id: c.id, name: c.name, platform: c.platform, createdAt: c.created_at, lastSeenAt: c.last_seen_at, revokedAt: c.revoked_at });
+export const clientView = (c: Row) => ({ id: c.id, name: c.name, platform: c.platform, createdAt: c.created_at, lastSeenAt: c.last_seen_at, revokedAt: c.revoked_at, userId: c.user_id });
 export const deviceView = (d: Row) => ({ id: d.id, name: d.name, state: d.state, platform: d.platform, grants: json(d.capabilities_json, {}), lastSeenAt: d.last_seen_at, createdAt: d.created_at, revokedAt: d.revoked_at });
 export const identityView = (i: Row) => ({ id: i.id, name: i.name, userName: i.user_name, presence: i.presence, narration: i.narration, subject: i.presence_subject, updatedAt: i.updated_at });
 
@@ -104,7 +108,7 @@ const loaders: Partial<Record<Entity, (id: string) => any>> = {
   rule: (id) => { const r = q.get('SELECT * FROM rules WHERE id = ?', id); return r && ruleView(r); },
   notification: (id) => { const r = q.get('SELECT * FROM notifications WHERE id = ?', id); return r && notificationView(r); },
   message: (id) => { const r = q.get('SELECT * FROM messages WHERE id = ?', id); return r && messageView(r); },
-  conversation: (id) => q.get('SELECT id, title, channel, space_id AS spaceId, updated_at AS updatedAt FROM conversations WHERE id = ?', id),
+  conversation: (id) => q.get('SELECT id, title, channel, space_id AS spaceId, user_id AS userId, updated_at AS updatedAt FROM conversations WHERE id = ?', id),
   space: (id) => q.get('SELECT * FROM spaces WHERE id = ?', id),
   device: (id) => { const r = q.get('SELECT * FROM devices WHERE id = ?', id); return r && deviceView(r); },
   computer: () => computerView(),
@@ -113,6 +117,43 @@ const loaders: Partial<Record<Entity, (id: string) => any>> = {
   settings: () => settingsView(),
   pairing: (id) => { const r = q.get('SELECT * FROM pairings WHERE id = ?', id); return r && pairingView(r); },
   client: (id) => { const r = q.get('SELECT * FROM clients WHERE id = ?', id); return r && clientView(r); },
+  // These two depend on who is looking (their connection, whether they can edit): realtime re-projects them per person.
+  plugin: (id) => { const p = getPlugin(id); return p && pluginView(p); },
+  agent: (id) => { const r = q.get('SELECT * FROM agents WHERE id = ? AND archived = 0', id); return r && agentView(r); },
+  member: (id) => userView(q.get('SELECT * FROM users WHERE id = ?', id)),
+  knowledge: (id) => { const d = q.get('SELECT d.id, d.agent_id, d.title, d.kind, d.state, a.visibility, a.owner_id FROM kb_documents d JOIN agents a ON a.id = d.agent_id WHERE d.id = ?', id); return d && { id: d.id, agentId: d.agent_id, title: d.title, kind: d.kind, state: d.state, visibility: d.visibility, ownerId: d.owner_id }; },
 };
+export const PER_VIEWER = new Set<string>(['plugin', 'agent']);
 
 export function load(entity: Entity, id: string) { return loaders[entity]?.(id); }
+
+// ─── visibility ──────────────────────────────────────────────────────────────
+/** What a given person may see. Admins supervise everything; members see their own work; the team room is shared. */
+const roleCache = new Map<string, { role: string; at: number }>();
+export function isAdminUser(userId: string) {
+  const c = roleCache.get(userId);
+  if (c && Date.now() - c.at < 5000) return c.role !== 'member';
+  const role = q.get('SELECT role FROM users WHERE id = ?', userId)?.role ?? 'member';
+  roleCache.set(userId, { role, at: Date.now() });
+  return role !== 'member';
+}
+const taskOwner = (taskId?: string | null) => taskId ? q.get('SELECT owner_id FROM tasks WHERE id = ?', taskId)?.owner_id : undefined;
+export function canSee(entity: string, d: any, userId: string): boolean {
+  if (!d) return true;
+  const admin = isAdminUser(userId);
+  const ownTask = (taskId?: string | null) => { if (!taskId || admin) return true; const o = taskOwner(taskId); return !o || o === userId; };
+  switch (entity) {
+    case 'task': return admin || !d.ownerId || d.ownerId === userId;
+    case 'approval': return ownTask(d.taskId);
+    case 'artifact': case 'activity': return ownTask(d.taskId);
+    case 'notification': return d.subjectType === 'task' ? ownTask(d.subjectId) : d.subjectType === 'approval' ? ownTask(q.get('SELECT task_id FROM approvals WHERE id = ?', d.subjectId)?.task_id) : true;
+    case 'memory': return !d.userId || d.userId === userId;
+    case 'message': { if (d.conversationId === 'group') return true; const cu = q.get('SELECT user_id FROM conversations WHERE id = ?', d.conversationId)?.user_id; return (cu ?? 'user_owner') === userId; }
+    case 'conversation': return d.id === 'group' || (d.userId ?? 'user_owner') === userId;
+    case 'agent': case 'knowledge': return d.visibility === 'org' || d.ownerId === userId;
+    case 'plugin': return d.visibility === 'org' || d.createdBy === userId || admin;
+    case 'member': return true;
+    case 'pairing': case 'client': return admin || entity === 'client' && d.userId === userId;
+    default: return true;
+  }
+}
