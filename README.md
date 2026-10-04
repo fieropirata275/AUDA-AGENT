@@ -10,7 +10,9 @@ and comes back only when your judgment is actually needed.
 > “Keep this server healthy and tell me when you need me.”
 > — and then you close the tab, and AUDA keeps going.
 
-![AUDA Home](docs/images/home-approval.png)
+![AUDA Home: agents at work orbit AUDA's glyph; one is waiting for an approval](docs/images/home-constellation.png)
+
+<sub>Every agent at work orbits AUDA's glyph — sub-agents as moons, the amber one is waiting for your decision. More in [Screenshots](#screenshots).</sub>
 
 ## What's here
 
@@ -37,6 +39,23 @@ This repository is a working vertical slice, not a mockup:
 The whole product works **offline without any model** — the built-in playbooks
 and intent compiler handle server health, page watching, CI, webhooks,
 reports, reminders, rules and memory. Connect Claude to unlock open-ended work.
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Home in dark mode](docs/images/home-dark.png) | ![Command palette handing work to an agent](docs/images/command-palette.png) |
+| **Home, dark.** The ambient light follows AUDA's mood. | **⌘K.** Jump anywhere, or hand work to an agent with `@name …`. |
+| ![Custom agents gallery](docs/images/agents.png) | ![An agent's learning tab](docs/images/agent-learning.png) |
+| **Agents.** One-click specialists from a sentence or a template. | **Learning.** What it has learned to value, its lessons, and how accurate its ranking is. |
+| ![A finished agent task with feedback](docs/images/task-feedback.png) | ![Plugins](docs/images/plugins.png) |
+| **Feedback.** 👍/👎 and comments become training signal and lessons. | **Plugins.** Each person connects their own account; writes ask first. |
+
+<p align="center">
+  <img src="docs/images/mobile-home.png" width="260" alt="Home on a phone, dark mode">
+  &nbsp;&nbsp;
+  <img src="docs/images/mobile-agents.png" width="260" alt="Agents on a phone">
+</p>
 
 ## Quick start
 

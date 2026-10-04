@@ -173,7 +173,7 @@ function Burst({ x, y, color, radius, onDone }: { x: number; y: number; color: s
   return (
     <>
       {sparks.map((p, i) => (
-        <motion.span key={i} className="spark" style={{ left: x, top: y, width: p.s, height: p.s, background: color }}
+        <motion.span key={i} className="burst-spark" style={{ left: x, top: y, width: p.s, height: p.s, background: color }}
           initial={{ x: 0, y: 0, opacity: 1, scale: 1 }} animate={{ x: Math.cos(p.a) * p.d, y: Math.sin(p.a) * p.d, opacity: 0, scale: 0.4 }}
           transition={{ duration: 0.9, ease: [0.16, 1, 0.3, 1] }} onAnimationComplete={i === 0 ? onDone : undefined} />
       ))}
