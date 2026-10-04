@@ -17,6 +17,10 @@ import { createTask, TERMINAL, kick } from '../tasks/engine.ts';
 import { config } from '../core/config.ts';
 import { saveArtifact } from '../artifacts/store.ts';
 import { handleUserMessage } from './chat.ts';
+import { currentUserId } from '../core/context.ts';
+import { mentionableAgents, startAgentTask } from '../agents/agents.ts';
+
+const isAdminUser = (id: string) => (q.get('SELECT role FROM users WHERE id = ?', id)?.role ?? 'owner') !== 'member';
 
 export const GROUP_ID = 'group';
 
@@ -45,12 +49,15 @@ export function post(o: { text: string; authorType: 'user' | 'auda' | 'agent'; a
 }
 
 /** Everyone you can address in the group. */
-export function agents() {
-  const rows = q.all(`SELECT id, title, state, depth, now_line, parent_task_id FROM tasks WHERE playbook = 'agent'
-    AND (state NOT IN ('COMPLETED','FAILED','CANCELLED') OR completed_at > ?) ORDER BY created_at DESC LIMIT 40`, now() - 6 * 3600_000);
+export function agents(userId = currentUserId()) {
+  const admin = isAdminUser(userId);
+  const rows = q.all(`SELECT id, title, state, depth, now_line, parent_task_id, agent_id FROM tasks WHERE playbook = 'agent'
+    AND (state NOT IN ('COMPLETED','FAILED','CANCELLED') OR completed_at > ?) AND (? OR owner_id IS NULL OR owner_id = ?) ORDER BY created_at DESC LIMIT 40`, now() - 6 * 3600_000, admin ? 1 : 0, userId);
   return [
     { id: 'auda', name: 'AUDA', kind: 'coordinator', state: 'ACTIVE', nowLine: 'Coordinates the team and assigns work' },
-    ...rows.map((t) => ({ id: t.id, name: agentName(t), kind: t.depth ? 'subagent' : 'agent', state: t.state, nowLine: t.now_line, parentId: t.parent_task_id })),
+    // Custom agents you can call on with @name: each mention starts a task for you.
+    ...mentionableAgents(userId).map((a) => ({ id: a.id, name: a.name, kind: 'custom', state: 'READY', nowLine: a.description ?? '', emoji: a.emoji, color: a.color })),
+    ...rows.map((t) => ({ id: t.id, name: agentName(t), kind: t.depth ? 'subagent' : 'agent', state: t.state, nowLine: t.now_line, parentId: t.parent_task_id, agentId: t.agent_id })),
   ];
 }
 
@@ -95,7 +102,15 @@ export async function handleGroupMessage(o: { text: string; attachments?: string
   if (!text && !attachments.length) throw new Error('Say something or attach a file');
   const mentions = (o.mentions ?? []).filter((m) => m !== 'auda');
   post({ text: text || '(sent files)', authorType: 'user', attachments, channel: o.channel });
-  for (const id of mentions) messageAgent(id, text, attachments, o.from ?? 'the user');
+  for (const id of mentions) {
+    if (id.startsWith('agt_')) {
+      const goal = text.replace(/@[\p{L}\p{N}_-]+(\s[\p{L}\p{N}_-]+)?\s*/u, '').trim() || text;
+      const [g, criteria] = goal.split(/\s*\|\s*|\s+done when:?\s+/i);
+      const taskId = startAgentTask(id, { goal: g + describeFiles(attachments), criteria, attachments, origin: { type: 'group', agentId: id } });
+      const a = q.get('SELECT name, emoji FROM agents WHERE id = ?', id);
+      post({ text: `${a?.emoji ?? ''} ${a?.name ?? 'The agent'} is on it.`.trim(), authorType: 'auda', objects: [{ type: 'task', id: taskId }] });
+    } else messageAgent(id, text, attachments, o.from ?? 'the user');
+  }
   if (mentions.length) return { routed: mentions };
 
   // Explicit assignment: "/task title | done when …"
