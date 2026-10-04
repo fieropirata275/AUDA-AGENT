@@ -79,7 +79,8 @@ npm test               # unit tests: scheduler, rules, policy, broker idempotenc
 npm run e2e:slice      # the vertical slice above, headless
 npm run e2e:agent      # agent path with a scripted model: review/revise, sub-agents, loops, approvals, crash mid-command
 npm run e2e:reliability# platform drills: DB corruption restore, poison quarantine, frozen-core watchdog, crash loop → safe mode
-npm run e2e            # all three
+npm run e2e:lan        # LM Studio (faithful fake), discovery, pairing, uploads, team chat with @mentions
+npm run e2e            # all of them
 ```
 
 ## Reliability
@@ -105,6 +106,8 @@ Live state: **Settings → Reliability**.
 | `ANTHROPIC_API_KEY` | — | Optional; Claude can also be connected in the UI |
 | `AUDA_CHROMIUM` | auto-detected | Chromium executable for AUDA's browser |
 | `AUDA_COMPUTER_DRIVER` | `local` | `local` · `docker` · `ssh` |
+| `LMSTUDIO_URL` | auto-detected | LM Studio server address(es), comma-separated |
+| `AUDA_DISCOVERY` | on | Set `0` to stop advertising on the LAN |
 | `AUDA_MAX_RSS_MB` | `2048` | Supervisor restarts the core gracefully above this |
 | `AUDA_STEP_TIMEOUT_MS` | `600000` | Default time budget per task step |
 | `AUDA_AGENT_MAX_TURNS` | `80` | Hard cap on model turns per agent task |
@@ -117,6 +120,29 @@ Live state: **Settings → Reliability**.
 
 All state lives in `AUDA_DATA`; back it up (or snapshot the VM) and AUDA resumes
 exactly where it was — responsibilities, memory and unfinished tasks included.
+
+## Local models with LM Studio
+
+Run `lms server start` (LM Studio's headless server) on this machine or another
+one on your network. AUDA finds it automatically and tells you. In
+**Connections → LM Studio**: pick a model, choose what to use it for (agents &
+chat, summaries & rules, code, images), and **Test & connect**. AUDA runs a real
+tool-calling probe: models that can call tools drive agents end to end; models
+that can't are used for text tasks only, and AUDA says so. Local-model quirks
+(malformed JSON arguments, tool calls written as text, `<think>` blocks) are
+handled, and context limits trigger the agent's context handoff earlier.
+Set `LMSTUDIO_URL` to point at a non-default address.
+
+## The Android app
+
+`android/` contains the AUDA app (Kotlin + Jetpack Compose, the same design
+system). It **finds AUDA instances on your network by itself** (mDNS
+`_auda._tcp`, UDP broadcast on port 4611, subnet sweep), pairs with a 6-digit
+code you approve in Connections, and gives you Home, Chat, **Team** (a group
+chat with every agent: `/task` to assign, `@agent` to steer one mid-task, attach
+files and whole folders) and Work (tasks, reviews, sub-agents, approvals,
+Assign work). CI builds installable APKs on every push — see
+[`android/README.md`](android/README.md).
 
 ## Linking one of your machines
 

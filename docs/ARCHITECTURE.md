@@ -274,3 +274,25 @@ Each failure class has a specific defence, and each defence has a test.
 
 The scripted model (`scripts/mock-model.mjs`, enabled with `AUDA_MOCK_MODEL`)
 lets the whole agent path run deterministically without an API key.
+
+---
+
+## 12. Local models, the LAN and the team
+
+* **Model providers.** The router speaks Anthropic (official SDK) and any
+  OpenAI-compatible server (`models/openai.ts`), with tool calling translated
+  both ways. LM Studio is detected on the usual addresses, connected after a
+  real tool-calling probe, and health-checked; a circuit breaker protects it.
+* **Discovery.** Each instance has a stable id and a name, advertises
+  `_auda._tcp` over mDNS, answers `AUDA_DISCOVER` UDP broadcasts on port 4611,
+  and serves `GET /api/discover` (no secrets).
+* **Pairing.** Apps request pairing → a 6-digit code appears in Connections →
+  approval issues a token once (stored hashed, revocable). With
+  `security.requirePairing` (or `AUDA_TOKEN`), only paired clients and the local
+  machine may use the API.
+* **Team chat.** The `group` conversation holds you, AUDA and every agent.
+  Agents post lifecycle updates; `@mentions` go into a task's inbox and are
+  appended (never rewriting history) at the agent's next turn; agents answer
+  with `reply_to_user`. Mentioning a finished agent starts a follow-up with its
+  context. Uploads stream into `~/inbox/<date>/…`, folder structure kept, each
+  file recorded with why it exists.
