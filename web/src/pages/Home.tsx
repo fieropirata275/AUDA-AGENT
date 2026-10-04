@@ -5,7 +5,9 @@
 import { useMemo } from 'react';
 import { motion, AnimatePresence, LayoutGroup } from 'motion/react';
 import { useStore } from '../lib/store';
-import { Aperture } from '../motion/Aperture';
+import { Constellation } from '../motion/Constellation';
+import { Ticker, Spoken } from '../motion/Live';
+import { useEffect, useState } from 'react';
 import { fm } from '../motion/spring';
 import { PRESENCE_LABEL, PresenceGlyph } from '../components/glyphs';
 import { ApprovalCard } from '../components/ApprovalCard';
@@ -21,6 +23,7 @@ import { openSheet } from '../components/ui';
 export function Home() {
   const s = useStore();
   const id = s.identity!;
+  const orbit = useOrbitSize();
   const tasks = Object.values(s.tasks);
   const resps = Object.values(s.responsibilities).filter((r) => r.state !== 'ENDED');
   const approvals = Object.values(s.approvals).filter((a) => a.state === 'pending').sort((a, b) => a.createdAt - b.createdAt);
@@ -44,21 +47,17 @@ export function Home() {
     <div className="home">
       <section className="presence">
         <motion.div className="presence-glyph" initial={{ scale: 0.92, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={fm.expressive}>
-          <Aperture state={glyphState} size={232} flash={flash} />
+          <Constellation tasks={tasks} state={glyphState} flash={flash} size={orbit} />
         </motion.div>
         <div className="presence-text">
           <div className="presence-state"><PresenceGlyph presence={id.presence} size={16} /><span>{PRESENCE_LABEL[id.presence]}</span>{!s.connected && <span className="chip problem">reconnecting…</span>}</div>
           <h1 className="display">{greeting()}{s.identity?.userName ? `, ${s.identity.userName}` : ''}.</h1>
-          <AnimatePresence mode="wait">
-            <motion.p key={id.narration} className="presence-narration voice" initial={{ opacity: 0, y: 6, filter: 'blur(2px)' }} animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }} exit={{ opacity: 0, y: -4 }} transition={fm.glide}>
-              “{id.narration}”
-            </motion.p>
-          </AnimatePresence>
+          <Spoken text={`“${id.narration}”`} className="presence-narration voice" />
           {whileAway.length > 0 && <p className="muted" style={{ margin: '4px 0 0' }}>I finished {whileAway.length} thing{whileAway.length > 1 ? 's' : ''} while you were away.</p>}
           <div className="counts">
             {counts.map((c) => (
               <button key={c.k} className={`count-tile ${c.hot ? 'hot' : ''}`} onClick={() => navigate(c.to)}>
-                <motion.span key={c.n} className="count-n tnum" initial={{ y: -6, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={fm.settle}>{c.n}</motion.span>
+                <Ticker value={c.n} className="count-n tnum" />
                 <span className="count-k">{c.k}</span>
               </button>
             ))}
@@ -119,4 +118,12 @@ export function Home() {
       </LayoutGroup>
     </div>
   );
+}
+
+/** The constellation's size follows the viewport so it never crowds the text. */
+function useOrbitSize() {
+  const pick = () => (innerWidth < 640 ? 260 : innerWidth < 1100 ? 320 : 360);
+  const [n, setN] = useState(pick);
+  useEffect(() => { const f = () => setN(pick()); addEventListener('resize', f); return () => removeEventListener('resize', f); }, []);
+  return n;
 }

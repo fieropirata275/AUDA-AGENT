@@ -7,8 +7,10 @@ import { App } from './App';
 import { bootstrap, connect, useStore, getTheme, setTheme, getState } from './lib/store';
 import { Aperture } from './motion/Aperture';
 import { SignIn } from './pages/Org';
+import { initTactile } from './motion/tactile';
 
 setTheme(getTheme());
+initTactile();
 
 function Root() {
   const s = useStore();

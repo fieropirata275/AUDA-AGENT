@@ -18,7 +18,8 @@ This repository is a working vertical slice, not a mockup:
 
 | | |
 |---|---|
-| **Presence** | A morphing glyph (“the Aperture”) and a one-sentence narration derived from what AUDA is actually doing — never a spinner. |
+| **Presence** | A morphing glyph (“the Aperture”) and a one-sentence narration derived from what AUDA is actually doing — never a spinner. Every agent at work orbits it as a live satellite (sub-agents as moons); an ambient aurora follows AUDA’s mood; ceramic surfaces catch the light under your pointer. |
+| **⌘K** | One palette to jump anywhere, find any task, agent, plugin or memory, run actions, ask AUDA, or hand work to an agent with `@name …`. |
 | **Responsibilities vs tasks** | Ongoing goals (“keep demo-api healthy”) own watchers, schedules and triggers, spawn finite tasks, and return to *Watching* when a task ends. |
 | **Durable task engine** | Leases, heartbeats, per-step checkpoints, retries with exponential backoff, crash recovery that resumes from the last completed step. |
 | **Tool broker + policy engine** | Every side effect goes through capabilities with autonomy levels, natural-language rules compiled to policy, specific approval cards, idempotency keys and an audit log. |
