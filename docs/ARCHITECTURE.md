@@ -232,3 +232,112 @@ morphs, never icon swaps. Idle breathes; listening expands; thinking reorganises
 inner harmonics; working orbits; waiting slows and settles; needs-you pulses softly;
 completion briefly resolves into a perfect circle; trouble deforms gracefully and
 exposes a notch — never red shaking.
+
+---
+
+## 11. Reliability model
+
+AUDA cannot promise that nothing ever fails — no system can, least of all
+against failures nobody has seen yet. It is built so that failures are
+**expected, detected, contained, recovered where safe, and explained** when not.
+Each failure class has a specific defence, and each defence has a test.
+
+| Failure | Defence | Where | Tested by |
+|---|---|---|---|
+| Worker/process dies mid-step | Leases + heartbeats; resume from last completed step | `tasks/engine.ts` | `e2e-agent` (SIGKILL mid-command) |
+| A step hangs forever | Per-step time budget; abort signal passed to models and tools; retried as transient | engine `stepTimeoutMs` | unit + engine |
+| Same action repeated by a retry | Idempotency keys; completed actions replay their stored result; unknown-state external actions never repeat without you | `tools/broker.ts` | `npm test` |
+| Retrying something that can't succeed | Error classification: transient → backoff with jitter; permanent → stop now with a plain diagnosis; unknown → bounded retries | `tools/errors.ts` | `e2e-agent` |
+| One bad task crash-loops the core | Recovery counter; quarantined after 3 crashes, everything else keeps running | `abandonRun` | `e2e-reliability` |
+| Core crash loop (any cause) | Process supervisor backs off and boots **safe mode** (UI/API up, nothing executes) after 5 crashes in 5 min | `bin/auda.ts` | `e2e-reliability` |
+| Core frozen (event loop blocked) | Supervisor health-probes every 10 s; 3 misses → kill and restart | `bin/auda.ts` | `e2e-reliability` (SIGSTOP) |
+| Memory leak | Graceful restart above `AUDA_MAX_RSS_MB` | `bin/auda.ts` | — |
+| Signal lost between "happened" and "handled" | Event outbox: persisted before dispatch, marked after handlers settle, replayed on boot; wake-ups are idempotent per event | `core/bus.ts` | `e2e-agent` |
+| Database corruption | `quick_check` at boot; corrupt file kept aside; newest passing backup restored automatically | `core/db.ts` | `e2e-reliability` |
+| Data loss | Hourly online backups (`VACUUM INTO`), newest 48 kept | `core/db.ts` | `e2e-reliability` |
+| Disk full / slow loop | Supervisor alerts with specifics | `supervisor/` | — |
+| Parallel agents colliding on the browser | Browser access is serialised | `computer/browser.ts` | — |
+| Flaky external service | Circuit breaker per connector (5 failures → 5 min cooldown) | `connectors/runtime.ts` | — |
+
+### Agents doing hard work
+
+| Typical agent failure | Defence |
+|---|---|
+| Claims "done" without doing it | Independent reviewer checks the result against **done when** before completion; up to two revise rounds; otherwise marked *not fully verified* |
+| Endless loops | Identical-call detection (warn at 3, stop at 5; bookkeeping calls get 2× slack); hard turn cap |
+| Context overflow on long tasks | Handoff to a fresh context with a structured progress summary (append-only — never rewrites history) |
+| Giant tool outputs | Outputs over 12 k chars saved as files; the agent gets head + tail + a pointer |
+| Malformed tool calls | Schema validation; errors returned to the model, not thrown |
+| Prompt injection via web content | Web/file content wrapped as `<untrusted_content>`; all side effects still pass the policy engine |
+| Too big for one agent | `spawn_subtasks`: up to 6 parallel sub-agents (depth ≤ 2), each with its own workspace; parent waits durably and joins results; stopping the parent stops the children |
+| Agents trampling each other's files | Per-task workspace `~/work/<task>` |
+
+The scripted model (`scripts/mock-model.mjs`, enabled with `AUDA_MOCK_MODEL`)
+lets the whole agent path run deterministically without an API key.
+
+---
+
+## 12. Local models, the LAN and the team
+
+* **Model providers.** The router speaks Anthropic (official SDK) and any
+  OpenAI-compatible server (`models/openai.ts`), with tool calling translated
+  both ways. LM Studio is detected on the usual addresses, connected after a
+  real tool-calling probe, and health-checked; a circuit breaker protects it.
+* **Discovery.** Each instance has a stable id and a name, advertises
+  `_auda._tcp` over mDNS, answers `AUDA_DISCOVER` UDP broadcasts on port 4611,
+  and serves `GET /api/discover` (no secrets).
+* **Pairing.** Apps request pairing → a 6-digit code appears in Connections →
+  approval issues a token once (stored hashed, revocable). With
+  `security.requirePairing` (or `AUDA_TOKEN`), only paired clients and the local
+  machine may use the API.
+* **Team chat.** The `group` conversation holds you, AUDA and every agent.
+  Agents post lifecycle updates; `@mentions` go into a task's inbox and are
+  appended (never rewriting history) at the agent's next turn; agents answer
+  with `reply_to_user`. Mentioning a finished agent starts a follow-up with its
+  context. Uploads stream into `~/inbox/<date>/…`, folder structure kept, each
+  file recorded with why it exists.
+
+## 13. Organization, plugins, custom agents and learning
+
+* **Identity per request.** `resolveUser` maps every request to a person:
+  `AUDA_TOKEN` → owner; a session (`sess_…`, cookie or bearer) → its user; a
+  paired client → the member who approved it; otherwise, with the organization
+  off, the local owner. The handler runs inside `runAs(userId)`
+  (AsyncLocalStorage), and the task engine runs each task as its `owner_id`, so
+  every layer below — memory, plugin credentials, knowledge — can ask
+  `currentUserId()` without threading it through. Realtime batches and the
+  bootstrap snapshot are filtered per viewer by `canSee`; plugin and agent views
+  are re-projected per viewer (connection state, edit rights).
+* **Plugins** (`plugins/`). A plugin row is org-level config (OpenAPI-style
+  tools or an MCP URL, auth endpoints, client id, client secret in the secret
+  broker); `plugin_connections` is per person. OAuth uses authorization code +
+  PKCE (S256) with a one-time `state` that also identifies the person on the
+  open callback route; refresh is single-flight per connection, retried once on
+  a 401, and a refused refresh marks the connection *expired* (the agent gets a
+  permanent "reconnect" error instead of retrying). MCP uses Streamable HTTP
+  (session id, JSON or SSE responses, re-initialise on 404) and discovers auth
+  via protected-resource metadata → authorization-server metadata → dynamic
+  client registration (public client). Calls go through the broker as
+  `plugin.read` (autonomous) or `plugin.write` (approval, `external` risk), so
+  rules, approvals, idempotency and audit apply; a per-plugin circuit breaker
+  and timeouts contain failing services, and responses are wrapped as untrusted
+  content.
+* **Custom agents** (`agents/agents.ts`). Identity + instructions + config
+  (allowed plugins, default "done when", sources, learning flags, re-ranker
+  weights). Tasks carry `agent_id` and `owner_id` (the person who asked); the
+  agent playbook adds the agent's instructions, `search_knowledge` and `learn`
+  tools, the runner's plugin tools (`p_<app>_<id>__<tool>`), and seeds the first
+  message with the top passages from its knowledge base.
+* **Knowledge** (`agents/knowledge.ts`). Documents → ~1,200-character passages
+  (150 overlap, sentence-aware) → FTS5 + vectors. Candidates get features
+  `[bm25, cosine, helped-before, is-lesson, confidence, freshness]` scored by a
+  per-agent logistic regression; at most two passages per document. Every
+  retrieval is logged with its features.
+* **Learning** (`agents/learning.ts`). On `task.completed/failed`: label each
+  logged retrieval by whether its distinctive terms appear in what the agent
+  itself produced (reasoning, tool inputs, answer, files — never the retrieval
+  output), run online SGD on new labels, then reflect (model or heuristics) into
+  deduplicated lessons and skills. Feedback overrides labels and turns comments
+  into lessons; hourly maintenance decays unhelpful lessons and re-reads
+  sources whose content hash changed. Covered end to end by
+  `scripts/e2e-org.mjs`.

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AUDA instances live on your local network and usually speak plain HTTP.
+     Traffic stays on the LAN; pair with a token and put AUDA behind TLS when exposing it further. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

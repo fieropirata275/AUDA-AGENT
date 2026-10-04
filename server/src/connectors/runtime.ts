@@ -14,7 +14,7 @@ export interface ConnectorKind {
   description: string;
   capabilities: string[];
   available: boolean;           // implemented in this build
-  setup?: 'token' | 'none' | 'device';
+  setup?: 'token' | 'none' | 'device' | 'endpoint';
   tokenHelp?: string;
 }
 
@@ -23,6 +23,7 @@ export const CATALOG: ConnectorKind[] = [
   { kind: 'webhook', name: 'Webhooks', description: 'Anything that can send an HTTP POST can wake AUDA.', capabilities: [], available: true, setup: 'none' },
   { kind: 'github', name: 'GitHub', description: 'Repositories and CI. AUDA can watch workflows and re-run or comment within your rules.', capabilities: ['github.read', 'github.rerun_workflow', 'github.comment'], available: true, setup: 'token', tokenHelp: 'A fine-grained personal access token with read access to Actions and Contents (and write to Actions if AUDA may re-run CI).' },
   { kind: 'anthropic', name: 'Claude (Anthropic)', description: 'Reasoning for open-ended tasks, summaries and rule compilation.', capabilities: [], available: true, setup: 'token', tokenHelp: 'An Anthropic API key. It is encrypted at rest and never shown to any model.' },
+  { kind: 'lmstudio', name: 'LM Studio', description: 'Run AUDA on local models through LM Studio’s headless server (lms server start). Tool calling included, nothing leaves your network.', capabilities: [], available: true, setup: 'endpoint' },
   { kind: 'device', name: 'Your devices', description: 'Link one of your own machines and grant specific capabilities. Visible and revocable.', capabilities: ['device.exec'], available: true, setup: 'device' },
   { kind: 'gmail', name: 'Gmail', description: 'Read mail, draft replies; sending would always ask.', capabilities: ['email.send'], available: false },
   { kind: 'calendar', name: 'Google Calendar', description: 'Know your schedule; propose events.', capabilities: [], available: false },

@@ -25,7 +25,7 @@ export function Home() {
   const resps = Object.values(s.responsibilities).filter((r) => r.state !== 'ENDED');
   const approvals = Object.values(s.approvals).filter((a) => a.state === 'pending').sort((a, b) => a.createdAt - b.createdAt);
   const suggested = Object.values(s.rules).filter((r) => r.state === 'draft' && r.origin?.startsWith('suggested'));
-  const working = tasks.filter((t) => ['RUNNING', 'READY', 'RETRYING', 'RECOVERING', 'WAITING_EXTERNAL', 'PAUSED'].includes(t.state) || (t.state === 'WAITING_USER' && t.attention !== 'approval')).sort((a, b) => b.updatedAt - a.updatedAt);
+  const working = tasks.filter((t) => !t.parentTaskId).filter((t) => ['RUNNING', 'READY', 'RETRYING', 'RECOVERING', 'WAITING_EXTERNAL', 'PAUSED'].includes(t.state) || (t.state === 'WAITING_USER' && t.attention !== 'approval')).sort((a, b) => b.updatedAt - a.updatedAt);
   const later = tasks.filter((t) => t.state === 'SCHEDULED').sort((a, b) => (a.nextEventAt ?? 0) - (b.nextEventAt ?? 0));
   const since = s.lastSeen ?? Date.now() - 12 * 3600_000;
   const finished = tasks.filter((t) => t.state === 'COMPLETED').sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0));

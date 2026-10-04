@@ -28,6 +28,10 @@ This repository is a working vertical slice, not a mockup:
 | **Supervisor** | An independent loop that detects dead task runs and a hung browser, and recovers them visibly. |
 | **Connections** | AUDA's computer, inbound webhooks, GitHub (CI watching), Claude, and linked devices with explicit, revocable grants. |
 | **Chat** | A control surface that maps language onto persistent state; created objects render inline and stay live. |
+| **Organization** | Optional accounts, roles and one-time invites. Each person has their own chats, tasks, agents and plugin connections; admins supervise everything. |
+| **Plugins** | External apps as agent tools — GitHub, Google Calendar/Drive/Gmail, Slack, Notion, Linear, any remote MCP server, any OpenAPI service. Everyone connects their own account over OAuth (PKCE); writes ask first. |
+| **Custom agents** | One-click specialists from a sentence or a template, with a knowledge base (files, web pages it studies, notes), shareable with the organization. |
+| **Learning** | Each agent learns from its work: a learned re-ranker over its knowledge, lessons and skills written after every task, and 👍/👎 feedback — all local. |
 
 The whole product works **offline without any model** — the built-in playbooks
 and intent compiler handle server health, page watching, CI, webhooks,
@@ -64,12 +68,36 @@ npm run dev          # UI on http://localhost:5173, API on :4610
    second approval AUDA **suggests a rule** so it can handle it without asking next time.
 6. **Computer → Reliability → Freeze the browser** to watch the supervisor recover it.
 
-The same story runs headless as a test:
+### Assign hard work
+
+**Work → Assign work**: say what to do, add details, and — most importantly —
+**done when**. AUDA publishes a live plan, splits independent parts across
+parallel sub-agents, asks only for real decisions, and has the result
+independently reviewed against your criteria before calling it finished.
+(Open-ended work needs Claude connected; everything else works offline.)
+
+### Tests
 
 ```bash
-npm test             # unit tests: scheduler, rules compiler, policy, broker idempotency, memory
-npm run e2e          # end-to-end vertical slice against a real core (~2 min)
+npm test               # unit tests: scheduler, rules, policy, broker idempotency, memory, reminders
+npm run e2e:slice      # the vertical slice above, headless
+npm run e2e:agent      # agent path with a scripted model: review/revise, sub-agents, loops, approvals, crash mid-command
+npm run e2e:reliability# platform drills: DB corruption restore, poison quarantine, frozen-core watchdog, crash loop → safe mode
+npm run e2e:lan        # LM Studio (faithful fake), discovery, pairing, uploads, team chat with @mentions
+npm run e2e:org        # accounts + invites, OAuth/PKCE + refresh, MCP discovery/registration/SSE, shared agents, knowledge, learning
+npm run e2e            # all of them
 ```
+
+## Reliability
+
+AUDA can't promise nothing ever fails; it is built so failures are expected,
+detected, contained, recovered where safe, and explained when not — step time
+budgets, error classification, idempotent actions, poison-task quarantine, an
+event outbox, a watchdog with safe mode, automatic backups with corruption
+restore, and agent guards (review before done, loop detection, context handoff,
+output capping, untrusted content). The full matrix, with the test for each
+defence, is in [`docs/ARCHITECTURE.md` §11](docs/ARCHITECTURE.md#11-reliability-model).
+Live state: **Settings → Reliability**.
 
 ## Configuration
 
@@ -77,12 +105,19 @@ npm run e2e          # end-to-end vertical slice against a real core (~2 min)
 |---|---|---|
 | `AUDA_DATA` | `./data` | Database, workspace, browser profile, secrets key |
 | `AUDA_PORT` | `4610` | |
-| `AUDA_PUBLIC_URL` | `http://localhost:4610` | Used for webhook URLs and device links |
+| `AUDA_PUBLIC_URL` | `http://localhost:4610` | Used for webhook URLs, invite links and the OAuth redirect URI (`…/api/oauth/callback`) |
 | `AUDA_TOKEN` | — | Require a token for the UI and API |
 | `AUDA_MASTER_KEY` | generated | Key for the encrypted secret store |
 | `ANTHROPIC_API_KEY` | — | Optional; Claude can also be connected in the UI |
 | `AUDA_CHROMIUM` | auto-detected | Chromium executable for AUDA's browser |
 | `AUDA_COMPUTER_DRIVER` | `local` | `local` · `docker` · `ssh` |
+| `LMSTUDIO_URL` | auto-detected | LM Studio server address(es), comma-separated |
+| `AUDA_DISCOVERY` | on | Set `0` to stop advertising on the LAN |
+| `AUDA_MAX_RSS_MB` | `2048` | Supervisor restarts the core gracefully above this |
+| `AUDA_STEP_TIMEOUT_MS` | `600000` | Default time budget per task step |
+| `AUDA_AGENT_MAX_TURNS` | `80` | Hard cap on model turns per agent task |
+| `AUDA_PLUGIN_TIMEOUT_MS` | `30000` | Time budget for one plugin call |
+| `AUDA_STUDY_INTERVAL_MS` | `3600000` | How often agents re-read their sources and prune weak lessons |
 
 ## Deploying
 
@@ -92,6 +127,66 @@ npm run e2e          # end-to-end vertical slice against a real core (~2 min)
 
 All state lives in `AUDA_DATA`; back it up (or snapshot the VM) and AUDA resumes
 exactly where it was — responsibilities, memory and unfinished tasks included.
+
+## Teams, plugins and custom agents
+
+**Organization.** AUDA starts single-user. Open **Organization** (bottom of the
+sidebar) to turn it on: you become the owner, then invite people with one-time
+links (7-day expiry). Members see their own work; owners and admins supervise
+all of it; the Team room is shared. Sessions are HttpOnly cookies (or
+`Authorization: Bearer sess_…` for scripts); phones paired by a member act as
+that member.
+
+**Plugins.** In **Plugins**, add a popular app (register an OAuth app with the
+redirect URI shown — `AUDA_PUBLIC_URL/api/oauth/callback` — and paste its
+client id/secret once), a remote MCP server (AUDA discovers its authorization
+server and registers itself, no setup), or any OpenAPI 3 JSON document (up to
+40 operations become tools). Then each person clicks **Sign in with …** to
+connect *their own* account. Agents call the tools of whoever gave them the
+work — never anyone else's. Reads run freely; anything that changes data goes
+through the approval flow (rules can relax that per app/tool, e.g.
+`github/comment`). Tokens are encrypted in the secret store and refreshed
+automatically.
+
+**Custom agents.** In **Agents**, describe what you need in a sentence (or pick
+a template) and AUDA drafts the role, instructions and starter prompts. Teach
+it by dropping documents (PDF/Word need `pdftotext`/`unzip` on the host),
+adding web pages it re-reads on a schedule, or writing notes. Share it with the
+organization; teammates can use it with their own accounts or duplicate it.
+`@mention` it in Team to hand it work.
+
+**How agents learn.** Retrieval is hybrid (BM25 + embeddings — LM Studio
+`/v1/embeddings` when `kb.embedModel` is set, otherwise a built-in hashed
+embedding that needs no model) and re-ranked by a small per-agent model. After
+each task the agent labels which passages it really used and the re-ranker
+takes a training step; it writes lessons (and skills from approaches that
+worked) into its knowledge base; your 👍/👎 and comments become labels and
+high-confidence lessons; lessons that keep failing to help fade and retire.
+The **Learning** tab shows all of it, and you can export the training data as
+JSONL.
+
+## Local models with LM Studio
+
+Run `lms server start` (LM Studio's headless server) on this machine or another
+one on your network. AUDA finds it automatically and tells you. In
+**Connections → LM Studio**: pick a model, choose what to use it for (agents &
+chat, summaries & rules, code, images), and **Test & connect**. AUDA runs a real
+tool-calling probe: models that can call tools drive agents end to end; models
+that can't are used for text tasks only, and AUDA says so. Local-model quirks
+(malformed JSON arguments, tool calls written as text, `<think>` blocks) are
+handled, and context limits trigger the agent's context handoff earlier.
+Set `LMSTUDIO_URL` to point at a non-default address.
+
+## The Android app
+
+`android/` contains the AUDA app (Kotlin + Jetpack Compose, the same design
+system). It **finds AUDA instances on your network by itself** (mDNS
+`_auda._tcp`, UDP broadcast on port 4611, subnet sweep), pairs with a 6-digit
+code you approve in Connections, and gives you Home, Chat, **Team** (a group
+chat with every agent: `/task` to assign, `@agent` to steer one mid-task, attach
+files and whole folders) and Work (tasks, reviews, sub-agents, approvals,
+Assign work). CI builds installable APKs on every push — see
+[`android/README.md`](android/README.md).
 
 ## Linking one of your machines
 

@@ -17,6 +17,14 @@ import { startSupervisor } from './supervisor/supervisor.ts';
 import { initPresence } from './agent/presence.ts';
 import { consolidate } from './memory/consolidate.ts';
 import { createServer } from './gateway/http.ts';
+import { initLmStudio } from './connectors/lmstudio.ts';
+import { initGroup } from './agent/group.ts';
+import { startDiscovery, stopDiscovery, lanAddresses } from './gateway/discovery.ts';
+import { replayPending, pruneEvents } from './core/bus.ts';
+import { backup, bootReport } from './core/db.ts';
+import { system } from './core/system.ts';
+import fs from 'node:fs';
+import path from 'node:path';
 import { attachRealtime } from './gateway/realtime.ts';
 import { shutdown as shutdownBrowser } from './computer/browser.ts';
 import { activity } from './core/activity.ts';
@@ -29,6 +37,9 @@ import './playbooks/webWatch.ts';
 import './playbooks/routines.ts';
 import './playbooks/githubCi.ts';
 import './playbooks/agent.ts';
+import { ensureOwner } from './org/users.ts';
+import { initPlugins } from './plugins/runtime.ts';
+import { initLearning } from './agents/learning.ts';
 
 process.removeAllListeners('warning');
 
@@ -43,6 +54,7 @@ function firstBoot() {
 }
 
 const fresh = firstBoot();
+ensureOwner();
 initComputer();
 ensureConnector('computer', 'AUDA’s Computer', 'connected', `${config.computerDriver} driver · persistent workspace`);
 ensureConnector('webhook', 'Webhooks', 'connected', `${config.publicUrl}/hooks/<name>`);
@@ -51,20 +63,37 @@ ensureConnector('anthropic', 'Claude (Anthropic)', providerReady({ provider: 'an
   process.env.ANTHROPIC_API_KEY ? 'Using ANTHROPIC_API_KEY from the environment' : undefined);
 initGitHub();
 initDevices();
+initLmStudio();
+initGroup();
 registerTool('notify.user', async (i) => ({ id: notify(i.level ?? 'fyi', i.title, i.body) }));
+initPlugins();
+initLearning();
 initResponsibilities();
 initPresence();
-startEngine({ concurrency: getSetting('engine.concurrency', config.workerConcurrency) });
-startScheduler();
-startWatchers();
+if (bootReport.integrity === 'restored') activity('recover', 'Restored the database from a backup', { detail: `The database failed its integrity check on startup (${bootReport.detail}). AUDA restored ${bootReport.restoredFrom} and kept the damaged copy for inspection. Anything after that backup may need redoing.` });
+if (system.safeMode) {
+  // Safe mode: the UI and API stay up; nothing executes until you say so.
+  activity('problem', 'AUDA started in safe mode', { detail: 'The core crashed repeatedly, so task execution, watchers and schedules are paused. Inspect recent problems in Activity, then leave safe mode from Settings → Reliability.' });
+  log.warn('SAFE MODE: engine, scheduler and watchers are paused');
+} else {
+  startEngine({ concurrency: getSetting('engine.concurrency', config.workerConcurrency) });
+  startScheduler();
+  startWatchers();
+  const replayed = replayPending();
+  if (replayed) activity('recover', `Replayed ${replayed} event${replayed > 1 ? 's' : ''} interrupted by the last shutdown`, { detail: 'They had been recorded but not fully handled; AUDA handled them now.' });
+}
 startSupervisor();
 setInterval(() => void consolidate().catch((e) => log.warn('consolidation failed', String(e))), 10 * 60_000);
+// Backups: one at boot (after the integrity check passed) and hourly; daily pruning of old events.
+setTimeout(() => { try { system.lastBackup = backup(); } catch (e) { log.warn('backup failed', String(e)); } }, 15_000);
+setInterval(() => { try { system.lastBackup = backup(); pruneEvents(); } catch (e) { log.warn('backup failed', String(e)); } }, 3600_000);
 onNarration(() => {});
 
 const server = createServer();
 attachRealtime(server);
 server.listen(config.port, config.host, () => {
-  log.info(`AUDA ${fresh ? 'is awake for the first time' : 'resumed'} · ${config.publicUrl}`);
+  log.info(`AUDA ${fresh ? 'is awake for the first time' : 'resumed'} · ${config.publicUrl}${lanAddresses().length ? ` · LAN: ${lanAddresses().map((a) => `http://${a}:${config.port}`).join(', ')}` : ''}`);
+  startDiscovery();
   if (!fresh) {
     const open = q.get("SELECT COUNT(*) n FROM tasks WHERE state NOT IN ('COMPLETED','FAILED','CANCELLED')")!.n;
     const resp = q.get("SELECT COUNT(*) n FROM responsibilities WHERE state NOT IN ('ENDED','PAUSED')")!.n;
@@ -77,6 +106,7 @@ async function stop(sig: string) {
   if (stopping) return; stopping = true;
   log.info(`stopping (${sig})`);
   stopEngine();
+  stopDiscovery();
   server.close();
   await shutdownBrowser();
   db.close();
@@ -84,5 +114,12 @@ async function stop(sig: string) {
 }
 process.on('SIGINT', () => void stop('SIGINT'));
 process.on('SIGTERM', () => void stop('SIGTERM'));
-process.on('uncaughtException', (e) => log.error('uncaught', e));
-process.on('unhandledRejection', (e) => log.error('unhandled rejection', e));
+// Unexpected errors are recorded with full stacks; the process keeps serving and the
+// external supervisor restarts it if it ever stops answering.
+const crashLog = (kind: string, e: unknown) => {
+  log.error(kind, e);
+  system.unexpectedErrors++;
+  try { fs.appendFileSync(path.join(config.dataDir, 'crash.log'), `${new Date().toISOString()} ${kind}: ${(e as Error)?.stack ?? e}\n`); } catch { /* best effort */ }
+};
+process.on('uncaughtException', (e) => crashLog('uncaught exception', e));
+process.on('unhandledRejection', (e) => crashLog('unhandled rejection', e));

@@ -8,6 +8,8 @@ export interface StepCtx {
   /** Checkpointed variables: persisted after every step. */
   vars: Record<string, any>;
   stepIdx: number;
+  /** Aborted when the step exceeds its time budget; pass to long-running calls. */
+  signal: AbortSignal;
   narrate(text: string): void;
   log(kind: 'observe' | 'reason' | 'act' | 'wait' | 'memory' | 'complete' | 'problem' | 'recover', title: string, detail?: string, raw?: unknown): void;
   tool<T = any>(capability: string, input: any, opts?: { why?: string; approval?: ApprovalSpec }): Promise<T>;
@@ -22,7 +24,7 @@ export interface StepCtx {
 export type StepResult =
   | void
   | { output?: any; narration?: string }
-  | { wait: 'external'; until?: number; reason: string }
+  | { wait: 'external'; until?: number; reason: string; on?: string; insert?: { key: string; title: string }[] }
   | { complete: string }
   | { insert: { key: string; title: string }[] };
 
@@ -41,6 +43,8 @@ export interface Playbook {
   description: string;
   plan(input: Record<string, any>): { key: string; title: string }[];
   steps: Record<string, (ctx: StepCtx) => Promise<StepResult>>;
+  /** Per-step time budgets (ms). Default 10 minutes. */
+  stepTimeoutMs?: Record<string, number>;
   responsibility?: ResponsibilityHooks;
 }
 

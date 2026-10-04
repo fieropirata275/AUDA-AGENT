@@ -4,11 +4,12 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { onChanges, type Entity } from '../core/changes.ts';
 import { onStream, setViewers } from '../core/streams.ts';
 import { q, now, setSetting } from '../core/db.ts';
-import { load } from './views.ts';
-import { authorized } from './http.ts';
+import { load, canSee, PER_VIEWER } from './views.ts';
+import { runAs } from '../core/context.ts';
+import { userFor } from './http.ts';
 import { handleDeviceSocket } from '../connectors/devices.ts';
 
-interface Client { ws: WebSocket; subs: Set<string> }
+interface Client { ws: WebSocket; subs: Set<string>; userId: string }
 const clients = new Set<Client>();
 
 export function attachRealtime(server: http.Server) {
@@ -19,9 +20,10 @@ export function attachRealtime(server: http.Server) {
       wss.handleUpgrade(req, socket, head, (ws) => handleDeviceSocket(ws, url.searchParams.get('token') ?? ''));
       return;
     }
-    if (url.pathname !== '/ws' || !authorized(req, url)) { socket.destroy(); return; }
+    const userId = url.pathname === '/ws' ? userFor(req, url) : null;
+    if (!userId) { socket.destroy(); return; }
     wss.handleUpgrade(req, socket, head, (ws) => {
-      const c: Client = { ws, subs: new Set() };
+      const c: Client = { ws, subs: new Set(), userId };
       clients.add(c);
       ws.send(JSON.stringify({ type: 'hello', ts: now() }));
       ws.on('message', (raw) => {
@@ -49,12 +51,23 @@ export function attachRealtime(server: http.Server) {
       }
     }
     const msgs = [...batch, ...extra].map((b) => {
-      if (b.removed) return { type: 'remove', entity: b.entity, id: b.id };
+      if (b.removed) return { type: 'remove', entity: b.entity, id: b.id, data: null };
       const data = load(b.entity, b.id);
-      return data ? { type: 'upsert', entity: b.entity, id: b.id, data } : { type: 'remove', entity: b.entity, id: b.id };
+      return data ? { type: 'upsert', entity: b.entity, id: b.id, data } : { type: 'remove', entity: b.entity, id: b.id, data: null };
     });
-    const payload = JSON.stringify({ type: 'batch', items: msgs });
-    for (const c of clients) if (c.ws.readyState === 1) c.ws.send(payload);
+    // Each person only receives what they may see.
+    const byUser = new Map<string, string>();
+    for (const c of clients) {
+      if (c.ws.readyState !== 1) continue;
+      let payload = byUser.get(c.userId);
+      if (!payload) {
+        const uid = c.userId;
+        const items = msgs.map((m) => m.type === 'upsert' && PER_VIEWER.has(m.entity) ? { ...m, data: runAs(uid, () => load(m.entity, m.id)) } : m);
+        payload = JSON.stringify({ type: 'batch', items: items.filter((m) => m.type === 'remove' || canSee(m.entity, m.data, uid)) });
+        byUser.set(c.userId, payload);
+      }
+      c.ws.send(payload);
+    }
   });
 
   onStream((channel, payload) => {

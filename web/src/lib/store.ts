@@ -22,6 +22,9 @@ export interface State {
   spaces: Record<string, T.Space>;
   conversations: Record<string, T.Conversation>;
   devices: Record<string, T.Device>;
+  pairings: Record<string, T.Pairing>;
+  clients: Record<string, T.Client>;
+  instance: { id: string; name: string; version: string; port: number; requiresPairing: boolean } | null;
   schedules: Record<string, T.Schedule>;
   messages: Record<string, T.Message[]>;
   computer: T.Computer | null;
@@ -31,14 +34,23 @@ export interface State {
   lastSeen: number | null;
   bootAt: number;
   publicUrl: string;
+  safeMode: boolean;
+  me: T.Member | null;
+  org: { enabled: boolean; name: string };
+  members: Record<string, T.Member>;
+  plugins: Record<string, T.Plugin>;
+  customAgents: Record<string, T.CustomAgent>;
+  /** The organization is on and this browser isn't signed in. */
+  needsLogin: boolean;
   /** ids of things that just completed, for celebratory motion */
   justCompleted: Record<string, number>;
 }
 
 let state: State = {
   ready: false, connected: false, identity: null, tasks: {}, responsibilities: {}, approvals: {}, rules: {}, connectors: {}, memories: {},
-  notifications: {}, activity: {}, artifacts: {}, spaces: {}, conversations: {}, devices: {}, schedules: {}, messages: {},
-  computer: null, settings: null, catalog: [], playbooks: [], lastSeen: null, bootAt: Date.now(), publicUrl: '', justCompleted: {},
+  notifications: {}, activity: {}, artifacts: {}, spaces: {}, conversations: {}, devices: {}, pairings: {}, clients: {}, instance: null, schedules: {}, messages: {},
+  computer: null, settings: null, catalog: [], playbooks: [], lastSeen: null, bootAt: Date.now(), safeMode: false, publicUrl: '', justCompleted: {},
+  me: null, org: { enabled: false, name: '' }, members: {}, plugins: {}, customAgents: {}, needsLogin: false,
 };
 const listeners = new Set<() => void>();
 const set = (patch: Partial<State>) => { state = { ...state, ...patch }; listeners.forEach((l) => l()); };
@@ -48,12 +60,18 @@ export function useStore() { return useSyncExternalStore((l) => { listeners.add(
 const byId = <X extends { id: string }>(xs: X[]) => Object.fromEntries(xs.map((x) => [x.id, x]));
 
 export async function bootstrap() {
-  const b = await api<any>('/api/bootstrap');
+  let b: any;
+  try { b = await api<any>('/api/bootstrap'); }
+  catch (e) {
+    if ((e as any).status === 401) { const me = await api<any>('/api/auth/me').catch(() => null); set({ needsLogin: true, ready: true, org: me?.org ?? state.org }); return; }
+    throw e;
+  }
   set({
+    needsLogin: false, me: b.me ?? null, org: b.org ?? { enabled: false, name: '' }, members: byId(b.members ?? []), plugins: byId(b.plugins ?? []), customAgents: byId(b.customAgents ?? []),
     ready: true, identity: b.identity, tasks: byId(b.tasks), responsibilities: byId(b.responsibilities), approvals: byId(b.approvals), rules: byId(b.rules),
     connectors: byId(b.connectors), memories: byId(b.memories), notifications: byId(b.notifications), activity: byId(b.activity), artifacts: byId(b.artifacts),
-    spaces: byId(b.spaces), conversations: byId(b.conversations), devices: byId(b.devices), schedules: byId(b.schedules), computer: b.computer,
-    settings: b.settings, catalog: b.catalog, playbooks: b.playbooks, publicUrl: b.publicUrl,
+    spaces: byId(b.spaces), conversations: byId(b.conversations), devices: byId(b.devices), pairings: byId(b.pairings ?? []), clients: byId(b.clients ?? []), instance: b.instance ?? null, schedules: byId(b.schedules), computer: b.computer,
+    settings: b.settings, catalog: b.catalog, playbooks: b.playbooks, publicUrl: b.publicUrl, safeMode: !!b.safeMode,
     ...(state.ready ? {} : { lastSeen: b.lastSeen, bootAt: Date.now() }),
   });
 }
@@ -61,6 +79,7 @@ export async function bootstrap() {
 const MAP: Record<string, keyof State> = {
   task: 'tasks', responsibility: 'responsibilities', approval: 'approvals', rule: 'rules', connector: 'connectors', memory: 'memories',
   notification: 'notifications', activity: 'activity', artifact: 'artifacts', space: 'spaces', conversation: 'conversations', device: 'devices', schedule: 'schedules',
+  pairing: 'pairings', client: 'clients', plugin: 'plugins', agent: 'customAgents', member: 'members',
 };
 
 type StreamFn = (payload: any) => void;
@@ -90,7 +109,7 @@ export function connect() {
     for (const c of wanted) ws!.send(JSON.stringify({ type: 'sub', channel: c }));
     if (state.ready) void bootstrap(); // catch up on anything missed while disconnected
   };
-  ws.onclose = () => { set({ connected: false }); setTimeout(connect, 1500); };
+  ws.onclose = () => { set({ connected: false }); if (!state.needsLogin) setTimeout(connect, 1500); };
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
     if (m.type === 'stream') { streamSubs.get(m.channel)?.forEach((f) => f(m.payload)); return; }

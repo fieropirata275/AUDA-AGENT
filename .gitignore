@@ -1,5 +1,10 @@
 node_modules/
-data/
+/data/
 web/dist/
 *.log
 .env
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.kotlin/

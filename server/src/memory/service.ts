@@ -10,6 +10,7 @@
  */
 import { insert, json, now, q, uid, update, type Row } from '../core/db.ts';
 import { changed } from '../core/changes.ts';
+import { currentUserId } from '../core/context.ts';
 import { emit } from '../core/bus.ts';
 
 export const MEMORY_KINDS = ['identity', 'preference', 'episodic', 'project', 'operational', 'semantic', 'relationship', 'procedural', 'working'] as const;
@@ -30,15 +31,17 @@ export interface MemoryInput {
   expiresAt?: number | null;
   pinned?: boolean;
   data?: any;
+  userId?: string;
 }
 
 const DEFAULT_TTL: Partial<Record<string, number>> = { working: 24 * 3600_000, operational: 30 * 24 * 3600_000 };
 
 export function remember(m: MemoryInput): string {
+  const owner = m.userId ?? (['chat', 'user'].includes(m.source) ? currentUserId() : null);
   const existing = q.get(
     `SELECT * FROM memories WHERE kind = ? AND lower(title) = lower(?) AND superseded_by IS NULL
-       AND IFNULL(space_id,'') = IFNULL(?, '') AND IFNULL(responsibility_id,'') = IFNULL(?, '')`,
-    m.kind, m.title, m.spaceId ?? null, m.responsibilityId ?? null);
+       AND IFNULL(space_id,'') = IFNULL(?, '') AND IFNULL(responsibility_id,'') = IFNULL(?, '') AND IFNULL(user_id,'') = IFNULL(?, '')`,
+    m.kind, m.title, m.spaceId ?? null, m.responsibilityId ?? null, owner);
   const t = now();
   if (existing) {
     const reinforced = existing.reinforced + 1;
@@ -62,6 +65,7 @@ export function remember(m: MemoryInput): string {
     scope: m.scope ?? (m.responsibilityId ? 'responsibility' : m.spaceId ? 'space' : 'global'),
     space_id: m.spaceId ?? undefined, responsibility_id: m.responsibilityId ?? undefined,
     weight: m.weight ?? 'mentioned', pinned: m.pinned ? 1 : 0, sensitivity: m.sensitivity ?? 'normal',
+    user_id: owner ?? undefined,
     expires_at: m.expiresAt === undefined ? (DEFAULT_TTL[m.kind] ? t + DEFAULT_TTL[m.kind]! : undefined) : m.expiresAt ?? undefined,
     created_at: t, updated_at: t,
   });
@@ -87,6 +91,7 @@ export function recall(query: string, o: { kinds?: string[]; spaceId?: string | 
   const t = now();
   return rows
     .filter((r) => (!r.expires_at || r.expires_at > t) && (o.includeSecret || r.sensitivity !== 'secret'))
+    .filter((r) => !r.user_id || r.user_id === currentUserId())
     .filter((r) => !o.kinds || o.kinds.includes(r.kind))
     .filter((r) => r.scope === 'global' || (o.spaceId && r.space_id === o.spaceId) || (o.responsibilityId && r.responsibility_id === o.responsibilityId) || (!o.spaceId && !o.responsibilityId))
     .map((r) => ({ ...r, score: -r.rank + WEIGHT_SCORE[r.weight] + (r.pinned ? 4 : 0) + r.confidence - (t - r.updated_at) / (30 * 24 * 3600_000) }))

@@ -1,0 +1,9 @@
+<resources>
+    <style name="Theme.Auda" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/auda_bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+    <color name="auda_bg">#151413</color>
+</resources>

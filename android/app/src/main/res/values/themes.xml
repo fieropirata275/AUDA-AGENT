@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.Auda" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/auda_bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+    <color name="auda_bg">#EBE7E0</color>
+    <color name="auda_accent">#C25E2C</color>
+</resources>

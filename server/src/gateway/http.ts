@@ -28,31 +28,42 @@ import { playbooks } from '../playbooks/types.ts';
 import { supervisorState } from '../supervisor/supervisor.ts';
 import { parseSchedule } from '../scheduler/fuzzy.ts';
 import { checkNow } from '../watchers/runner.ts';
+import { authorize, resolveUser, requestPairing, pairingStatus, decidePairing, revokeClient } from './pairing.ts';
+import { card } from './discovery.ts';
+import { detect as lmDetect, connect as lmConnect, disconnect as lmDisconnect } from '../connectors/lmstudio.ts';
+import { listModels } from '../models/openai.ts';
+import { agents, handleGroupMessage, messageAgent, saveUpload, GROUP_ID } from '../agent/group.ts';
+import { system } from '../core/system.ts';
+import { runAs, OWNER_ID, currentUserId } from '../core/context.ts';
+import { orgEnabled, orgName, members, getUser, userView } from '../org/users.ts';
+import { visiblePlugins, pluginView } from '../plugins/runtime.ts';
+import { visibleAgents, agentView } from '../agents/agents.ts';
+import { registerTeamRoutes } from './teamRoutes.ts';
+import { busStats } from '../core/bus.ts';
+import { backup, bootReport, listBackups } from '../core/db.ts';
+import { browserQueue } from '../computer/browser.ts';
 
-type Req = http.IncomingMessage & { body?: any; params: Record<string, string>; query: URLSearchParams };
+type Req = http.IncomingMessage & { body?: any; params: Record<string, string>; query: URLSearchParams; userId?: string };
 type Handler = (req: Req, res: http.ServerResponse) => Promise<any> | any;
-const routes: { method: string; re: RegExp; keys: string[]; fn: Handler }[] = [];
-function route(method: string, pattern: string, fn: Handler) {
+const routes: { method: string; re: RegExp; keys: string[]; fn: Handler; raw?: boolean; open?: boolean }[] = [];
+function route(method: string, pattern: string, fn: Handler, opts: { raw?: boolean; open?: boolean } = {}) {
   const keys: string[] = [];
   const re = new RegExp('^' + pattern.replace(/:(\w+)/g, (_, k) => { keys.push(k); return '([^/]+)'; }) + '$');
-  routes.push({ method, re, keys, fn });
+  routes.push({ method, re, keys, fn, ...opts });
 }
 class HttpError extends Error { constructor(public status: number, msg: string) { super(msg); } }
 const must = (v: any, msg = 'Not found'): any => { if (v == null) throw new HttpError(404, msg); return v; };
 
 export const authToken = process.env.AUDA_TOKEN;
-export function authorized(req: http.IncomingMessage, url: URL) {
-  if (!authToken) return true;
-  const cookie = /(?:^|;\s*)auda_token=([^;]+)/.exec(req.headers.cookie ?? '')?.[1];
-  const given = req.headers['x-auda-token'] ?? url.searchParams.get('token') ?? (cookie ? decodeURIComponent(cookie) : undefined);
-  return typeof given === 'string' && given.length === authToken.length && crypto.timingSafeEqual(Buffer.from(given), Buffer.from(authToken));
-}
+export function authorized(req: http.IncomingMessage, url: URL) { return authorize(req, url, authToken); }
+export function userFor(req: http.IncomingMessage, url: URL) { return resolveUser(req, url, authToken); }
 
 // ─── bootstrap ───────────────────────────────────────────────────────────────
 
-route('GET', '/api/bootstrap', () => {
+route('GET', '/api/bootstrap', (req) => {
   const ident = q.get('SELECT * FROM identity LIMIT 1')!;
-  return {
+  const me = req.userId ?? OWNER_ID;
+  const snap: Record<string, any> = {
     identity: V.identityView(ident),
     tasks: q.all(`SELECT * FROM tasks WHERE state NOT IN ('COMPLETED','FAILED','CANCELLED') OR completed_at > ? ORDER BY created_at DESC LIMIT 200`, now() - 14 * 86400_000).map(V.taskView),
     responsibilities: q.all('SELECT * FROM responsibilities ORDER BY created_at DESC').map(V.respView),
@@ -74,7 +85,20 @@ route('GET', '/api/bootstrap', () => {
     lastSeen: getSetting('user.lastSeen', null),
     publicUrl: config.publicUrl,
     supervisor: supervisorState,
+    safeMode: system.safeMode,
+    instance: card(),
+    pairings: q.all("SELECT * FROM pairings WHERE state = 'pending' AND expires_at > ?", now()).map(V.pairingView),
+    clients: q.all('SELECT * FROM clients WHERE revoked_at IS NULL ORDER BY created_at DESC').map(V.clientView),
+    me: userView(getUser(me)),
+    org: { enabled: orgEnabled(), name: orgName() },
+    members: members(),
+    plugins: visiblePlugins(me).map((p) => pluginView(p, me)),
+    customAgents: visibleAgents(me).map((a) => agentView(a, me)),
   };
+  // Each person sees their own work (admins supervise everything); the team room is shared.
+  const entityOf: Record<string, string> = { tasks: 'task', approvals: 'approval', memories: 'memory', notifications: 'notification', activity: 'activity', artifacts: 'artifact', conversations: 'conversation', pairings: 'pairing', clients: 'client' };
+  for (const [key, entity] of Object.entries(entityOf)) if (Array.isArray(snap[key])) snap[key] = snap[key].filter((d: any) => V.canSee(entity, d, me));
+  return snap;
 });
 
 // ─── chat ────────────────────────────────────────────────────────────────────
@@ -86,16 +110,23 @@ route('POST', '/api/chat', async (req) => {
   const reply = await handleUserMessage(cid, text, req.body?.channel ?? 'web');
   return { conversationId: cid, reply };
 });
-route('GET', '/api/conversations/:id/messages', (req) => q.all('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at', req.params.id).map(V.messageView));
+route('GET', '/api/conversations/:id/messages', (req) => !V.canSee('conversation', q.get('SELECT id, user_id AS userId FROM conversations WHERE id = ?', req.params.id), req.userId ?? OWNER_ID) ? [] : q.all('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at', req.params.id).map(V.messageView));
 
 // ─── work ────────────────────────────────────────────────────────────────────
 
+/** Members act only on their own work; owners and admins on everyone's. */
+function ownTask(req: Req, taskId: string | null | undefined) {
+  const t = taskId ? q.get('SELECT owner_id FROM tasks WHERE id = ?', taskId) : undefined;
+  if (t && !V.canSee('task', { ownerId: t.owner_id }, req.userId ?? OWNER_ID)) throw new HttpError(404, 'Not found');
+}
 route('POST', '/api/approvals/:id/decide', (req) => {
+  ownTask(req, q.get('SELECT task_id FROM approvals WHERE id = ?', req.params.id)?.task_id);
   const d = req.body?.decision;
   if (d !== 'approved' && d !== 'rejected') throw new HttpError(400, 'decision must be approved or rejected');
   return V.approvalView(must(decideApproval(req.params.id, d, req.body?.channel ?? 'web')));
 });
 route('GET', '/api/tasks/:id', (req) => {
+  ownTask(req, req.params.id);
   const t = must(q.get('SELECT * FROM tasks WHERE id = ?', req.params.id));
   return {
     ...V.taskView(t),
@@ -109,12 +140,16 @@ route('GET', '/api/tasks/:id', (req) => {
     stepOutputs: q.all('SELECT idx, output_json FROM task_steps WHERE task_id = ? ORDER BY idx', t.id).map((s) => ({ idx: s.idx, output: s.output_json ? JSON.parse(s.output_json) : null })),
   };
 });
-route('POST', '/api/tasks/:id/cancel', (req) => { cancelTask(req.params.id); return { ok: true }; });
-route('POST', '/api/tasks/:id/pause', (req) => { pauseTask(req.params.id); return { ok: true }; });
-route('POST', '/api/tasks/:id/resume', (req) => { resumeTask(req.params.id); return { ok: true }; });
+route('POST', '/api/tasks/:id/cancel', (req) => { ownTask(req, req.params.id); cancelTask(req.params.id); return { ok: true }; });
+route('POST', '/api/tasks/:id/pause', (req) => { ownTask(req, req.params.id); pauseTask(req.params.id); return { ok: true }; });
+route('POST', '/api/tasks/:id/resume', (req) => { ownTask(req, req.params.id); resumeTask(req.params.id); return { ok: true }; });
 route('POST', '/api/tasks', (req) => {
   const s = req.body?.when ? parseSchedule(req.body.when) : null;
-  return { id: createTask({ title: req.body.title, goal: req.body.goal, playbook: req.body.playbook ?? 'agent', input: req.body.input ?? {}, spaceId: req.body.spaceId, runAt: s?.nextRunAt, origin: { type: 'user' } }) };
+  const title = String(req.body?.title ?? '').trim();
+  if (!title) throw new HttpError(400, 'Give the task a title');
+  if (req.body?.when && !s) throw new HttpError(400, `I couldn’t understand “${req.body.when}” as a time`);
+  const input = { ...(req.body.input ?? {}), ...(req.body.criteria ? { criteria: String(req.body.criteria) } : {}) };
+  return { id: createTask({ title, goal: req.body.goal || title, playbook: req.body.playbook ?? 'agent', input, spaceId: req.body.spaceId, runAt: s?.nextRunAt, priority: req.body.priority, deadlineAt: req.body.deadlineAt, origin: { type: 'user' } }) };
 });
 route('POST', '/api/responsibilities', (req) => ({ id: createResponsibility({ ...req.body, origin: { type: 'user' } }) }));
 route('POST', '/api/responsibilities/:id/:action', async (req) => {
@@ -251,7 +286,11 @@ route('PUT', '/api/settings/:key', (req) => {
     'notifications.webhook': (x) => setSetting('notifications.webhook', String(x ?? '')),
     'ui.sound': (x) => setSetting('ui.sound', !!x),
     'engine.concurrency': (x) => setSetting('engine.concurrency', Math.max(1, Math.min(8, Number(x)))),
+    'agent.verify': (x) => setSetting('agent.verify', !!x),
+    'agent.webSearch': (x) => setSetting('agent.webSearch', !!x),
     'models': (x) => { const cur = getSetting<any>('models', {}); setSetting('models', { ...cur, roles: x.roles ?? cur.roles, dailyBudget: x.dailyBudget ?? cur.dailyBudget, monthlyBudget: x.monthlyBudget ?? cur.monthlyBudget, local: x.local ?? cur.local }); },
+    'instance.name': (x) => setSetting('instance.name', String(x).slice(0, 60)),
+    'security.requirePairing': (x) => setSetting('security.requirePairing', !!x),
     'identity': (x) => { const id = q.get('SELECT id FROM identity LIMIT 1')!.id; update('identity', id, { user_name: x.userName }); changed('identity', id); },
   };
   if (!allowed[key]) throw new HttpError(400, 'unknown setting');
@@ -273,7 +312,82 @@ route('POST', '/api/spaces', (req) => {
   changed('space', id);
   return { id };
 });
-route('GET', '/api/health', () => ({ ok: true, supervisor: supervisorState, time: now() }));
+// ─── discovery, pairing, clients ─────────────────────────────────────────────
+
+route('GET', '/api/discover', () => card(), { open: true });
+route('POST', '/api/pair/request', (req) => {
+  try { return requestPairing(String(req.body?.name ?? 'Phone'), req.body?.platform); } catch (e) { throw new HttpError(429, (e as Error).message); }
+}, { open: true });
+route('GET', '/api/pair/:id', (req) => {
+  try { return pairingStatus(req.params.id, req.query.get('secret') ?? ''); } catch (e) { throw new HttpError(404, (e as Error).message); }
+}, { open: true });
+route('POST', '/api/pair/:id/:decision', (req) => {
+  try { decidePairing(req.params.id, req.params.decision === 'approve'); } catch (e) { throw new HttpError(409, (e as Error).message); }
+  return { ok: true };
+});
+route('GET', '/api/pairings', () => q.all("SELECT id, name, platform, code, state, created_at AS createdAt, expires_at AS expiresAt FROM pairings WHERE state = 'pending' AND expires_at > ?", now()));
+route('GET', '/api/clients', () => q.all('SELECT id, name, platform, created_at AS createdAt, last_seen_at AS lastSeenAt FROM clients WHERE revoked_at IS NULL ORDER BY created_at DESC'));
+route('DELETE', '/api/clients/:id', (req) => { revokeClient(req.params.id); return { ok: true }; });
+
+// ─── LM Studio / local models ────────────────────────────────────────────────
+
+route('GET', '/api/lmstudio/detect', async () => ({ found: await lmDetect(), configured: modelSettings().local ?? null }));
+route('GET', '/api/lmstudio/models', async (req) => listModels(String(req.query.get('baseUrl') ?? modelSettings().local?.baseUrl ?? 'http://127.0.0.1:1234')).catch((e) => { throw new HttpError(502, `Couldn’t reach that server: ${(e as Error).message}`); }));
+route('POST', '/api/lmstudio/connect', async (req) => {
+  const { baseUrl, model, roles, apiKey } = req.body ?? {};
+  if (!baseUrl || !model) throw new HttpError(400, 'Choose a server and a model');
+  try { return await lmConnect({ baseUrl, model, roles: Array.isArray(roles) && roles.length ? roles : ['reasoning', 'utility', 'coding', 'vision'], apiKey }); }
+  catch (e) { throw new HttpError(400, (e as Error).message); }
+});
+route('DELETE', '/api/lmstudio', () => { lmDisconnect(); activity('user', 'Disconnected LM Studio'); return { ok: true }; });
+
+// ─── group chat, agents, files ───────────────────────────────────────────────
+
+route('GET', '/api/agents', () => agents());
+route('GET', '/api/group/messages', (req) => {
+  const before = Number(req.query.get('before') ?? now() + 1);
+  return q.all('SELECT * FROM messages WHERE conversation_id = ? AND created_at < ? ORDER BY created_at DESC LIMIT 150', GROUP_ID, before).reverse().map(V.messageView);
+});
+route('POST', '/api/group', async (req) => {
+  for (const m of req.body?.mentions ?? []) if (typeof m === 'string' && m.startsWith('task_')) ownTask(req, m);
+  try { return await handleGroupMessage({ text: String(req.body?.text ?? ''), attachments: req.body?.attachments, mentions: req.body?.mentions, channel: req.body?.channel ?? 'web', from: req.body?.from }); }
+  catch (e) { throw new HttpError(400, (e as Error).message); }
+});
+route('POST', '/api/tasks/:id/message', (req) => {
+  ownTask(req, req.params.id);
+  try { return messageAgent(req.params.id, String(req.body?.text ?? ''), req.body?.attachments ?? []); } catch (e) { throw new HttpError(404, (e as Error).message); }
+});
+route('POST', '/api/files', async (req) => {
+  const name = req.query.get('name') ?? String(req.headers['x-filename'] ?? 'file');
+  try { return await saveUpload(req, { name: decodeURIComponent(name), dir: req.query.get('dir') ?? undefined, from: req.query.get('from') ?? undefined }); }
+  catch (e) { throw new HttpError(413, (e as Error).message); }
+}, { raw: true });
+route('GET', '/api/computer/download', (req, res) => {
+  const p = req.query.get('path') ?? '';
+  const abs = files.resolveWs(p);
+  if (!fs.existsSync(abs) || fs.statSync(abs).isDirectory()) throw new HttpError(404, 'No such file');
+  res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-disposition': `attachment; filename="${path.basename(abs)}"`, ...CORS });
+  fs.createReadStream(abs).pipe(res);
+  return undefined;
+});
+
+route('GET', '/api/health', () => ({ ok: true, pid: process.pid, safeMode: system.safeMode, rssMb: Math.round(process.memoryUsage().rss / 1048576), loopLagMs: system.loopLagMs, time: now() }), { open: true }); // the supervisor's watchdog must reach it without signing in
+route('GET', '/api/system', () => ({
+  ...system, uptimeMs: now() - system.startedAt, rssMb: Math.round(process.memoryUsage().rss / 1048576), heapMb: Math.round(process.memoryUsage().heapUsed / 1048576),
+  supervisor: supervisorState, bus: busStats, boot: bootReport, backups: listBackups().slice(0, 12), browserQueue: browserQueue.waiting,
+  quarantined: q.all("SELECT id, title, diagnosis, completed_at FROM tasks WHERE error = 'Quarantined after repeated crashes' ORDER BY completed_at DESC LIMIT 10"),
+  recentRecoveries: q.get("SELECT COUNT(*) n FROM activity WHERE kind = 'recover' AND ts > ?", now() - 86400_000)!.n,
+  failedToday: q.get("SELECT COUNT(*) n FROM tasks WHERE state = 'FAILED' AND completed_at > ?", now() - 86400_000)!.n,
+  pendingEvents: q.get('SELECT COUNT(*) n FROM events WHERE dispatched = 0')!.n,
+}));
+route('POST', '/api/system/backup', () => { system.lastBackup = backup(); activity('user', 'You made a backup', { detail: system.lastBackup }); return { name: system.lastBackup }; });
+route('POST', '/api/system/leave-safe-mode', () => {
+  if (!system.safeMode) return { ok: true };
+  if (!system.supervised) throw new HttpError(409, 'Restart AUDA without AUDA_SAFE_MODE to leave safe mode.');
+  activity('user', 'You asked AUDA to leave safe mode');
+  setTimeout(() => process.exit(75), 300);
+  return { ok: true, restarting: true };
+});
 
 // ─── inbound hooks ───────────────────────────────────────────────────────────
 
@@ -306,8 +420,11 @@ route('GET', '/demo/supplier', (_req, res) => {
 });
 route('POST', '/api/demo/supplier', (req) => { demoPage = { ...demoPage, ...req.body }; return demoPage; });
 
+registerTeamRoutes(route, HttpError);
+
 // ─── server ──────────────────────────────────────────────────────────────────
 
+const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type, x-auda-token, authorization', 'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS' };
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2', '.woff': 'font/woff', '.json': 'application/json', '.ico': 'image/x-icon' };
 
 export function createServer() {
@@ -317,21 +434,24 @@ export function createServer() {
     try {
       if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/hooks/') || url.pathname.startsWith('/demo/')) {
         const isHook = url.pathname.startsWith('/hooks/') || url.pathname.startsWith('/demo/');
-        if (!isHook && !authorized(req, url)) throw new HttpError(401, 'Unauthorized');
+        if (req.method === 'OPTIONS') { res.writeHead(204, CORS); res.end(); return; }
         const r = routes.find((x) => x.method === req.method && x.re.test(url.pathname));
+        const userId = userFor(req, url);
+        if (!isHook && !r?.open && !userId) throw new HttpError(401, orgEnabled() ? 'Sign in to continue' : 'Unauthorized — pair this device first');
         if (!r) throw new HttpError(404, 'No such endpoint');
+        req.userId = userId ?? undefined;
         const m = r.re.exec(url.pathname)!;
         req.params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
         req.query = url.searchParams;
-        if (req.method !== 'GET') {
+        if (req.method !== 'GET' && !r.raw) {
           const chunks: Buffer[] = [];
           for await (const c of req) chunks.push(c as Buffer);
           const raw = Buffer.concat(chunks).toString('utf8');
           (req as any).rawBody = raw;
           try { req.body = raw ? JSON.parse(raw) : {}; } catch { req.body = { raw }; }
         }
-        const out = await r.fn(req, res);
-        if (out !== undefined && !res.headersSent) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(out)); }
+        const out = await runAs(userId ?? OWNER_ID, () => r.fn(req, res));
+        if (out !== undefined && !res.headersSent) { res.writeHead(200, { 'content-type': 'application/json', ...CORS }); res.end(JSON.stringify(out)); }
         return;
       }
       // Static UI
@@ -343,7 +463,7 @@ export function createServer() {
     } catch (e) {
       const status = e instanceof HttpError ? e.status : 500;
       if (status === 500) log.error(`${req.method} ${url.pathname}`, e);
-      if (!res.headersSent) { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: (e as Error).message })); }
+      if (!res.headersSent) { res.writeHead(status, { 'content-type': 'application/json', ...CORS }); res.end(JSON.stringify({ error: (e as Error).message })); }
     }
   });
 }

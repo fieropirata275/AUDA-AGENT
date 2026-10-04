@@ -7,13 +7,16 @@ import Anthropic from '@anthropic-ai/sdk';
 import { getSetting, insert, now, q, uid } from '../core/db.ts';
 import { resolveSecret } from '../secrets/broker.ts';
 import { log } from '../core/log.ts';
+import { chat as oaiChat } from './openai.ts';
+import { guarded } from '../connectors/runtime.ts';
 
 export type Role = 'reasoning' | 'utility' | 'vision' | 'coding' | 'fallback';
 export interface RoleTarget { provider: 'anthropic' | 'local' | 'none'; model: string }
 export interface ModelSettings {
   roles: Record<Role, RoleTarget>;
   anthropicSecret?: string;
-  local?: { baseUrl: string; model: string };
+  /** OpenAI-compatible local server (LM Studio, Ollama, llama.cpp, vLLM). */
+  local?: { baseUrl: string; model: string; kind?: 'lmstudio' | 'openai'; tools?: boolean; apiKeySecret?: string; contextLength?: number };
   dailyBudget?: number;      // in currency units (€/$), 0 = unlimited
   monthlyBudget?: number;
 }
@@ -54,13 +57,45 @@ function anthropic() {
   return client;
 }
 
+/**
+ * Test/dev provider: AUDA_MOCK_MODEL points at a module exporting
+ * `respond(args) => { content, stopReason }`. Lets the agent path (tools,
+ * subtasks, verification, loops, crashes) be exercised without an API key.
+ */
+const MOCK = process.env.AUDA_MOCK_MODEL;
+let mockMod: any = null;
+async function callMock(a: CompleteArgs): Promise<CompleteResult> {
+  mockMod ??= await import(MOCK!);
+  const r = await mockMod.respond(a);
+  const content = r.content ?? [{ type: 'text', text: r.text ?? '' }];
+  record(a, { provider: 'local', model: 'mock' }, 0, 0, true);
+  return {
+    text: content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n'), content,
+    toolUses: content.filter((b: any) => b.type === 'tool_use').map((b: any) => ({ id: b.id, name: b.name, input: b.input })),
+    stopReason: r.stopReason ?? (content.some((b: any) => b.type === 'tool_use') ? 'tool_use' : 'end_turn'), model: 'mock',
+  };
+}
+
 export function providerReady(t: RoleTarget) {
+  if (MOCK) return true;
   if (t.provider === 'anthropic') return Boolean(anthropicKey());
   if (t.provider === 'local') return Boolean(modelSettings().local?.baseUrl && (t.model || modelSettings().local?.model));
   return false;
 }
 export const hasReasoningModel = () => providerReady(modelSettings().roles.reasoning);
-export const canUseTools = () => modelSettings().roles.reasoning.provider === 'anthropic' && providerReady(modelSettings().roles.reasoning);
+export const canUseTools = () => {
+  if (MOCK) return true;
+  const s = modelSettings(), r = s.roles.reasoning;
+  if (!providerReady(r)) return false;
+  return r.provider === 'anthropic' || (r.provider === 'local' && s.local?.tools !== false);
+};
+/** Rough context budget (characters) for the reasoning model, used to decide when agents hand off. */
+export const contextChars = () => {
+  const s = modelSettings();
+  if (s.roles.reasoning.provider === 'local' && s.local?.contextLength) return Math.floor(s.local.contextLength * 2.6);
+  return Infinity;
+};
+export const supportsServerTools = () => !MOCK && modelSettings().roles.reasoning.provider === 'anthropic';
 
 export class BudgetExceeded extends Error {}
 
@@ -88,7 +123,8 @@ export interface CompleteArgs {
   system?: string;
   prompt?: string;
   messages?: Anthropic.Beta.BetaMessageParam[];
-  tools?: Anthropic.Beta.BetaTool[];
+  tools?: Anthropic.Beta.BetaToolUnion[];
+  signal?: AbortSignal;
   maxTokens?: number;
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   taskId?: string;
@@ -110,9 +146,11 @@ export async function complete(a: CompleteArgs): Promise<CompleteResult> {
   for (const t of targets) {
     setFlight(1);
     try {
+      if (MOCK) return await callMock(a);
       return t.provider === 'anthropic' ? await callAnthropic(t.model, a) : await callLocal(t.model || s.local!.model, a);
     } catch (e) {
       lastErr = e;
+      if (a.signal?.aborted) throw e;
       log.warn(`model ${t.provider}/${t.model} failed for ${a.purpose}`, String(e));
       record(a, t, 0, 0, false);
     } finally { setFlight(-1); }
@@ -133,7 +171,7 @@ async function callAnthropic(model: string, a: CompleteArgs): Promise<CompleteRe
     ...(model !== 'claude-haiku-4-5' ? { thinking: { type: 'adaptive' as const }, output_config: { effort: a.effort ?? 'medium' } } : {}),
     ...(serverFallback ? { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' as any } : {}),
   };
-  const res = await c.beta.messages.create(params);
+  const res = await c.beta.messages.create(params, { signal: a.signal, timeout: 10 * 60_000 });
   record(a, { provider: 'anthropic', model }, res.usage.input_tokens, res.usage.output_tokens, true);
   if (res.stop_reason === 'refusal') throw new Error('The model declined this request.');
   const text = res.content.filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === 'text').map((b) => b.text).join('\n');
@@ -141,23 +179,17 @@ async function callAnthropic(model: string, a: CompleteArgs): Promise<CompleteRe
   return { text, content: res.content, toolUses, stopReason: res.stop_reason, model: res.model };
 }
 
-/** OpenAI-compatible local endpoint (Ollama, llama.cpp, vLLM…). Text tasks only. */
+/** OpenAI-compatible local endpoint (LM Studio, Ollama, llama.cpp, vLLM…) — with tool calling. */
 async function callLocal(model: string, a: CompleteArgs): Promise<CompleteResult> {
-  const base = modelSettings().local?.baseUrl?.replace(/\/$/, '');
-  if (!base) throw new Error('No local model endpoint configured');
-  if (a.tools?.length) throw new Error('Local models are used for text tasks only');
-  const res = await fetch(`${base}/v1/chat/completions`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(120_000),
-    body: JSON.stringify({ model, max_tokens: a.maxTokens ?? 2000, messages: [
-      ...(a.system ? [{ role: 'system', content: a.system }] : []),
-      ...(a.messages ? a.messages.map((m) => ({ role: m.role, content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) })) : [{ role: 'user', content: a.prompt ?? '' }]),
-    ] }),
-  });
-  if (!res.ok) throw new Error(`Local model HTTP ${res.status}`);
-  const j: any = await res.json();
-  const text = j.choices?.[0]?.message?.content ?? '';
-  record(a, { provider: 'local', model }, j.usage?.prompt_tokens ?? 0, j.usage?.completion_tokens ?? 0, true);
-  return { text, content: [{ type: 'text', text, citations: null } as any], toolUses: [], stopReason: 'end_turn', model };
+  const l = modelSettings().local;
+  if (!l?.baseUrl) throw new Error('No local model endpoint configured');
+  const r = await guarded('lmstudio', () => oaiChat(
+    { baseUrl: l.baseUrl, model, apiKey: resolveSecret(l.apiKeySecret), tools: l.tools },
+    { system: a.system, messages: (a.messages ?? [{ role: 'user', content: a.prompt ?? '' }]) as any, tools: a.tools as any[], maxTokens: Math.min(a.maxTokens ?? 4096, 16_384), signal: a.signal },
+  ));
+  record(a, { provider: 'local', model }, r.usage.input, r.usage.output, true);
+  const text = r.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+  return { text, content: r.content as any, toolUses: r.content.filter((b) => b.type === 'tool_use').map((b) => ({ id: b.id, name: b.name, input: b.input })), stopReason: r.stopReason, model: r.model };
 }
 
 function record(a: CompleteArgs, t: RoleTarget, inTok: number, outTok: number, ok: boolean) {
