@@ -432,7 +432,7 @@ select.input { height: 36px; padding: 0 10px; }
 .sat-tip-title { font-weight: 620; font-size: 13.5px; }
 .ripple { position: absolute; border-radius: 50%; transform: translate(-50%, -50%); border: 2px solid var(--settled); pointer-events: none; animation: ripple 1.5s cubic-bezier(.16, 1, .3, 1) forwards; }
 @keyframes ripple { from { opacity: .7; scale: .9; } to { opacity: 0; scale: 1.9; } }
-.spark { position: absolute; border-radius: 50%; margin: -2px 0 0 -2px; pointer-events: none; z-index: 3; box-shadow: 0 0 8px currentColor; }
+.burst-spark { position: absolute; border-radius: 50%; margin: -2px 0 0 -2px; pointer-events: none; z-index: 3; box-shadow: 0 0 8px currentColor; }
 
 /* Rolling numbers */
 .ticker { display: inline-flex; overflow: hidden; height: 1.1em; line-height: 1.1; }
