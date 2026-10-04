@@ -22,6 +22,9 @@ export interface State {
   spaces: Record<string, T.Space>;
   conversations: Record<string, T.Conversation>;
   devices: Record<string, T.Device>;
+  pairings: Record<string, T.Pairing>;
+  clients: Record<string, T.Client>;
+  instance: { id: string; name: string; version: string; port: number; requiresPairing: boolean } | null;
   schedules: Record<string, T.Schedule>;
   messages: Record<string, T.Message[]>;
   computer: T.Computer | null;
@@ -38,7 +41,7 @@ export interface State {
 
 let state: State = {
   ready: false, connected: false, identity: null, tasks: {}, responsibilities: {}, approvals: {}, rules: {}, connectors: {}, memories: {},
-  notifications: {}, activity: {}, artifacts: {}, spaces: {}, conversations: {}, devices: {}, schedules: {}, messages: {},
+  notifications: {}, activity: {}, artifacts: {}, spaces: {}, conversations: {}, devices: {}, pairings: {}, clients: {}, instance: null, schedules: {}, messages: {},
   computer: null, settings: null, catalog: [], playbooks: [], lastSeen: null, bootAt: Date.now(), safeMode: false, publicUrl: '', justCompleted: {},
 };
 const listeners = new Set<() => void>();
@@ -53,7 +56,7 @@ export async function bootstrap() {
   set({
     ready: true, identity: b.identity, tasks: byId(b.tasks), responsibilities: byId(b.responsibilities), approvals: byId(b.approvals), rules: byId(b.rules),
     connectors: byId(b.connectors), memories: byId(b.memories), notifications: byId(b.notifications), activity: byId(b.activity), artifacts: byId(b.artifacts),
-    spaces: byId(b.spaces), conversations: byId(b.conversations), devices: byId(b.devices), schedules: byId(b.schedules), computer: b.computer,
+    spaces: byId(b.spaces), conversations: byId(b.conversations), devices: byId(b.devices), pairings: byId(b.pairings ?? []), clients: byId(b.clients ?? []), instance: b.instance ?? null, schedules: byId(b.schedules), computer: b.computer,
     settings: b.settings, catalog: b.catalog, playbooks: b.playbooks, publicUrl: b.publicUrl, safeMode: !!b.safeMode,
     ...(state.ready ? {} : { lastSeen: b.lastSeen, bootAt: Date.now() }),
   });
@@ -62,6 +65,7 @@ export async function bootstrap() {
 const MAP: Record<string, keyof State> = {
   task: 'tasks', responsibility: 'responsibilities', approval: 'approvals', rule: 'rules', connector: 'connectors', memory: 'memories',
   notification: 'notifications', activity: 'activity', artifact: 'artifacts', space: 'spaces', conversation: 'conversations', device: 'devices', schedule: 'schedules',
+  pairing: 'pairings', client: 'clients',
 };
 
 type StreamFn = (payload: any) => void;

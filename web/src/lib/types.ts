@@ -29,7 +29,10 @@ export interface Connector { id: string; kind: string; name: string; state: stri
 export interface CatalogItem { kind: string; name: string; description: string; capabilities: string[]; available: boolean; setup?: string; tokenHelp?: string }
 export interface Rule { id: string; text: string; compiled: any; interpretation: string; state: 'draft' | 'active' | 'disabled'; spaceId?: string; origin?: string; createdAt: number; activatedAt?: number; hits: number }
 export interface Notification { id: string; level: string; title: string; body?: string; subjectType?: string; subjectId?: string; delivered: boolean; suppressedReason?: string; readAt?: number; createdAt: number }
-export interface Message { id: string; conversationId: string; role: 'user' | 'auda'; content: string; objects: { type: string; id: string }[]; channel: string; createdAt: number }
+export interface Message { id: string; conversationId: string; role: 'user' | 'auda'; content: string; objects: { type: string; id: string }[]; channel: string; createdAt: number; authorType: 'user' | 'auda' | 'agent'; authorId?: string; authorName: string; authorState?: string | null; attachments: string[] }
+export interface Pairing { id: string; name: string; platform?: string; code: string; state: string; createdAt: number; expiresAt: number }
+export interface Client { id: string; name: string; platform?: string; createdAt: number; lastSeenAt?: number; revokedAt?: number }
+export interface Agent { id: string; name: string; kind: 'coordinator' | 'agent' | 'subagent'; state: string; nowLine?: string; parentId?: string }
 export interface Conversation { id: string; title: string; channel: string; spaceId?: string; updatedAt: number }
 export interface Space { id: string; name: string; slug: string; description?: string; icon?: string }
 export interface Device { id: string; name: string; state: string; platform?: string; grants: Record<string, boolean>; lastSeenAt?: number; createdAt: number; revokedAt?: number }
@@ -38,6 +41,6 @@ export interface Computer { id: string; name: string; state: string; controller:
 export interface Capability { id: string; title: string; group: string; risk: string; default: string; level: string }
 export interface Settings {
   notificationPrefs: Record<string, string>; notificationWebhook: string; sound: boolean; concurrency: number;
-  models: { roles: Record<string, { provider: string; model: string }>; dailyBudget?: number; monthlyBudget?: number; local?: { baseUrl: string; model: string }; anthropicConnected: boolean; anthropicFromEnv: boolean };
-  spend: { today: number; month: number }; capabilities: Capability[]; agentVerify: boolean; agentWebSearch: boolean;
+  models: { roles: Record<string, { provider: string; model: string }>; dailyBudget?: number; monthlyBudget?: number; local?: { baseUrl: string; model: string; kind?: string; tools?: boolean; contextLength?: number }; anthropicConnected: boolean; anthropicFromEnv: boolean };
+  spend: { today: number; month: number }; capabilities: Capability[]; agentVerify: boolean; agentWebSearch: boolean; instanceName: string; requirePairing: boolean;
 }

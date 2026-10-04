@@ -71,6 +71,115 @@ function ConnectorCard({ c, cat }: { c?: Connector; cat: CatalogItem }) {
   );
 }
 
+const ROLE_LABEL: Record<string, string> = { reasoning: 'Agents & chat', utility: 'Summaries & rules', coding: 'Code & CI', vision: 'Images' };
+
+/** LM Studio: detect → pick a model → probe tool calling → connect. */
+function LmStudioCard({ c }: { c?: Connector }) {
+  const s = useStore();
+  const local = s.settings?.models.local;
+  const [found, setFound] = useState<any[] | null>(null);
+  const [baseUrl, setBaseUrl] = useState(local?.baseUrl ?? '');
+  const [models, setModels] = useState<any[]>([]);
+  const [model, setModel] = useState(local?.model ?? '');
+  const [roles, setRoles] = useState<string[]>(['reasoning', 'utility', 'coding', 'vision']);
+  const [busy, setBusy] = useState<'' | 'detect' | 'connect'>('');
+  const [msg, setMsg] = useState<{ tone: string; text: string } | null>(null);
+  const connected = c?.state === 'connected' && local?.baseUrl;
+  const detect = async () => {
+    setBusy('detect'); setMsg(null);
+    try {
+      const r = await api('/api/lmstudio/detect');
+      setFound(r.found);
+      const first = r.found.find((f: any) => f.flavor === 'lmstudio') ?? r.found[0];
+      if (first) { setBaseUrl(first.baseUrl); setModels(first.models.filter((m: any) => m.type !== 'embeddings')); setModel((m) => m || first.models.find((x: any) => x.state === 'loaded' && x.type !== 'embeddings')?.id || first.models[0]?.id || ''); }
+      else setMsg({ tone: 'problem', text: 'No LM Studio server found. Start it with `lms server start` (or enable “Serve on Local Network” in LM Studio), or enter its address.' });
+    } finally { setBusy(''); }
+  };
+  const loadModels = async () => {
+    setBusy('detect'); setMsg(null);
+    try { const r = await api(`/api/lmstudio/models?baseUrl=${encodeURIComponent(baseUrl)}`); setModels(r.models.filter((m: any) => m.type !== 'embeddings')); }
+    catch (e) { setMsg({ tone: 'problem', text: (e as Error).message }); } finally { setBusy(''); }
+  };
+  const connect = async () => {
+    setBusy('connect'); setMsg(null);
+    try {
+      const r = await post('/api/lmstudio/connect', { baseUrl, model, roles });
+      setMsg(r.tools ? { tone: 'settled', text: `Connected. ${model} can call tools, so it can run agents.` } : { tone: 'attention', text: `Connected for text tasks. ${model} didn’t call the test tool, so agents will need a tool-capable model (e.g. Qwen3, Llama 3.1+, Mistral Small).` });
+    } catch (e) { setMsg({ tone: 'problem', text: (e as Error).message }); } finally { setBusy(''); }
+  };
+  return (
+    <motion.article layout className={`conn ${connected ? 'on' : ''} ${c?.state === 'error' || c?.state === 'degraded' ? 'bad' : ''}`} transition={fm.glide}>
+      <div className="row" style={{ alignItems: 'flex-start' }}>
+        <div className="conn-plug"><Morph shape={connected ? 'linked' : busy ? 'flow' : 'unplugged'} size={26} color={connected ? 'var(--accent)' : 'var(--ink-3)'} /></div>
+        <div className="grow">
+          <div className="row"><h3 className="title" style={{ fontSize: 16 }}>LM Studio</h3><span className={`chip ${connected ? 'settled' : c?.state === 'available' ? 'accent' : c?.state === 'error' ? 'problem' : ''}`}>{connected ? 'Connected' : c?.state === 'available' ? 'Found' : c?.state === 'error' ? 'Unreachable' : 'Not connected'}</span></div>
+          <div className="small muted" style={{ marginTop: 2 }}>{c?.detail ?? 'Run AUDA on local models through LM Studio’s headless server. Nothing leaves your network.'}</div>
+          {c?.error && <div className="small" style={{ color: 'var(--problem)', marginTop: 4 }}>{c.error}</div>}
+        </div>
+      </div>
+      <div className="stack" style={{ marginTop: 12 }}>
+        <div className="row">
+          <input className="input" placeholder="http://127.0.0.1:1234" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} onBlur={() => baseUrl && loadModels()} />
+          <Button size="sm" busy={busy === 'detect'} onClick={detect}>Find</Button>
+        </div>
+        {found && found.length > 1 && <div className="row wrap" style={{ gap: 6 }}>{found.map((f) => <button key={f.baseUrl} className={`chip btnlike ${f.baseUrl === baseUrl ? 'accent' : ''}`} onClick={() => { setBaseUrl(f.baseUrl); setModels(f.models.filter((m: any) => m.type !== 'embeddings')); }}>{f.baseUrl}</button>)}</div>}
+        {models.length > 0 && (
+          <div className="model-list">{models.map((m) => (
+            <button key={m.id} className={`model-row ${m.id === model ? 'on' : ''}`} onClick={() => setModel(m.id)}>
+              <span className={`led ${m.state === 'loaded' ? 'on' : ''}`} />
+              <span className="grow ellipsis mono">{m.id}</span>
+              <span className="small faint">{[m.quantization, m.contextLength ? `${Math.round(m.contextLength / 1024)}k` : null, m.state === 'loaded' ? 'loaded' : m.state === 'not-loaded' ? 'loads on first use' : null].filter(Boolean).join(' · ')}</span>
+            </button>
+          ))}</div>
+        )}
+        {models.length > 0 && (
+          <div className="row wrap" style={{ gap: 6 }}><span className="small faint">Use for</span>{Object.keys(ROLE_LABEL).map((r) => <button key={r} className={`chip btnlike ${roles.includes(r) ? 'accent' : ''}`} onClick={() => setRoles(roles.includes(r) ? roles.filter((x) => x !== r) : [...roles, r])}>{ROLE_LABEL[r]}</button>)}</div>
+        )}
+        {msg && <div className={`chip ${msg.tone}`} style={{ height: 'auto', padding: '6px 10px', whiteSpace: 'normal' }}>{msg.text}</div>}
+        <div className="row" style={{ justifyContent: 'flex-end', gap: 8 }}>
+          {connected && <Button size="sm" variant="ghost" className="danger" onClick={() => api('/api/lmstudio', { method: 'DELETE' })}>Disconnect</Button>}
+          <Button size="sm" variant="primary" busy={busy === 'connect'} disabled={!baseUrl || !model || !roles.length} onClick={connect}>{connected ? 'Reconnect' : 'Test & connect'}</Button>
+        </div>
+      </div>
+    </motion.article>
+  );
+}
+
+/** Phones and tablets: pairing requests, paired apps, and LAN access. */
+function Phones() {
+  const s = useStore();
+  const [name, setName] = useState(s.settings?.instanceName || s.instance?.name || '');
+  const pending = Object.values(s.pairings).filter((p) => p.state === 'pending' && p.expiresAt > Date.now());
+  const clients = Object.values(s.clients).filter((c) => !c.revokedAt);
+  return (
+    <div className="stack" style={{ gap: 12 }}>
+      <AnimatePresence>{pending.map((p) => (
+        <motion.div key={p.id} layout className="pair-request" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, scale: 0.97 }} transition={fm.glide}>
+          <Morph shape="attention" size={20} color="var(--attention)" />
+          <div className="grow"><div style={{ fontWeight: 600 }}>{p.name} wants to connect{p.platform ? ` · ${p.platform}` : ''}</div><div className="small muted">Approve only if the same code is showing on your device.</div></div>
+          <div className="pair-code tnum">{p.code.slice(0, 3)} {p.code.slice(3)}</div>
+          <Button size="sm" variant="ghost" onClick={() => post(`/api/pair/${p.id}/reject`)}>Decline</Button>
+          <Button size="sm" variant="primary" onClick={() => post(`/api/pair/${p.id}/approve`)}>Approve</Button>
+        </motion.div>
+      ))}</AnimatePresence>
+      {clients.map((c) => (
+        <div key={c.id} className="conn on"><div className="row">
+          <span className={`led ${c.lastSeenAt && Date.now() - c.lastSeenAt < 5 * 60_000 ? 'on' : ''}`} />
+          <div className="grow"><div style={{ fontWeight: 600 }}>{c.name}</div><div className="small faint">{c.platform ?? 'App'} · paired {new Date(c.createdAt).toLocaleDateString()}{c.lastSeenAt ? ` · last seen ${ago(c.lastSeenAt)}` : ''}</div></div>
+          <Button size="sm" variant="ghost" className="danger" onClick={() => api(`/api/clients/${c.id}`, { method: 'DELETE' })}>Revoke</Button>
+        </div></div>
+      ))}
+      <div className="card flat stack" style={{ gap: 10 }}>
+        <div className="row"><div className="grow"><div style={{ fontWeight: 560 }}>Name on the network</div><div className="small faint">What the AUDA app shows when it finds this instance.</div></div>
+          <form className="row" onSubmit={(e) => { e.preventDefault(); void api('/api/settings/instance.name', { method: 'PUT', body: { value: name } }); }}><input className="input" style={{ width: 220 }} value={name} onChange={(e) => setName(e.target.value)} /><Button size="sm">Save</Button></form></div>
+        <div className="row"><div className="grow"><div style={{ fontWeight: 560 }}>Require pairing on the network</div><div className="small faint">Only paired apps (and this computer) can use AUDA. Recommended unless your network is fully trusted.</div></div>
+          <Toggle checked={!!s.settings?.requirePairing} onChange={(v) => api('/api/settings/security.requirePairing', { method: 'PUT', body: { value: v } })} /></div>
+        <div className="small faint">The Android app finds this instance automatically (mDNS <span className="mono">_auda._tcp</span>, with a UDP fallback on port 4611). You can also enter <span className="mono">{s.publicUrl}</span>.</div>
+      </div>
+    </div>
+  );
+}
+
 function Devices() {
   const s = useStore();
   const [name, setName] = useState('');
@@ -98,7 +207,11 @@ export function Connections() {
   return (
     <div>
       <div className="page-head"><div><h1 className="title-lg">Connections</h1><p>The services, machines and accounts that make up AUDA’s environment — and exactly what it may do with each.</p></div></div>
-      <div className="grid-2">{available.map((cat) => <ConnectorCard key={cat.kind} cat={cat} c={s.connectors[cat.kind]} />)}</div>
+      <div className="grid-2">{available.map((cat) => cat.kind === 'lmstudio' ? <LmStudioCard key={cat.kind} c={s.connectors.lmstudio} /> : <ConnectorCard key={cat.kind} cat={cat} c={s.connectors[cat.kind]} />)}</div>
+      <section className="section">
+        <div className="section-head"><h2>Phones &amp; tablets</h2><span className="faint small">The AUDA app: chat, team, supervision. Pair once, revoke any time.</span></div>
+        <Phones />
+      </section>
       <section className="section">
         <div className="section-head"><h2>Your devices</h2><span className="faint small">Separate from AUDA’s computer. Explicit, visible, revocable.</span></div>
         <Devices />
