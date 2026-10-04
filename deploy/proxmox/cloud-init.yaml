@@ -1,0 +1,14 @@
+#cloud-config
+hostname: auda
+package_update: true
+packages: [ca-certificates, curl, git]
+users:
+  - name: auda
+    groups: [sudo, docker]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+runcmd:
+  - curl -fsSL https://get.docker.com | sh
+  - usermod -aG docker auda
+  - git clone https://github.com/fieropirata275/auda-agent.git /opt/auda
+  - cd /opt/auda && docker compose -f deploy/docker-compose.yml up -d --build

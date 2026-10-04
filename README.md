@@ -1,1 +1,134 @@
-# AUDA-AGENT
+# AUDA
+
+**An always-on autonomous digital operator.**
+
+AUDA is not a chatbot. It is a persistent entity with its own computer, memory,
+responsibilities and rules. It keeps working after the conversation ends,
+notices relevant changes on its own, acts within the permissions you give it,
+and comes back only when your judgment is actually needed.
+
+> “Keep this server healthy and tell me when you need me.”
+> — and then you close the tab, and AUDA keeps going.
+
+![AUDA Home](docs/images/home-approval.png)
+
+## What's here
+
+This repository is a working vertical slice, not a mockup:
+
+| | |
+|---|---|
+| **Presence** | A morphing glyph (“the Aperture”) and a one-sentence narration derived from what AUDA is actually doing — never a spinner. |
+| **Responsibilities vs tasks** | Ongoing goals (“keep demo-api healthy”) own watchers, schedules and triggers, spawn finite tasks, and return to *Watching* when a task ends. |
+| **Durable task engine** | Leases, heartbeats, per-step checkpoints, retries with exponential backoff, crash recovery that resumes from the last completed step. |
+| **Tool broker + policy engine** | Every side effect goes through capabilities with autonomy levels, natural-language rules compiled to policy, specific approval cards, idempotency keys and an audit log. |
+| **AUDA's computer** | A persistent workspace with a terminal, filesystem, a real Chromium profile (live screencast in the UI), and one small service to look after. Watch it, take control, hand it back. |
+| **Memory** | Typed memory (identity, preference, episodic, project, operational, semantic, relationship, procedural, working) with provenance, confidence, weight (*mentioned → established → defining*), expiry and consolidation. |
+| **Scheduler & watchers** | Cron, intervals, one-offs and fuzzy windows (“tomorrow morning”); cheap edge-triggered watchers that wake responsibilities only on meaningful change. |
+| **Supervisor** | An independent loop that detects dead task runs and a hung browser, and recovers them visibly. |
+| **Connections** | AUDA's computer, inbound webhooks, GitHub (CI watching), Claude, and linked devices with explicit, revocable grants. |
+| **Chat** | A control surface that maps language onto persistent state; created objects render inline and stay live. |
+
+The whole product works **offline without any model** — the built-in playbooks
+and intent compiler handle server health, page watching, CI, webhooks,
+reports, reminders, rules and memory. Connect Claude to unlock open-ended work.
+
+## Quick start
+
+Requires Node.js ≥ 22.12 and (for the browser) Chromium.
+
+```bash
+npm install
+npm run build        # build the UI
+npm start            # AUDA core + process supervisor on http://localhost:4610
+```
+
+Development (hot reload for core and UI):
+
+```bash
+npm run dev          # UI on http://localhost:5173, API on :4610
+```
+
+### Try the vertical slice
+
+1. In Chat (or the box on Home) say **“Keep the server healthy.”**
+   AUDA creates a responsibility and starts watching `demo-api` on its own computer.
+2. Open **Computer → Services** and switch `demo-api` to **debug** logging.
+   The volume starts filling at ~450 KB/s; the gauge climbs on Home.
+3. At 80% the watcher fires. AUDA investigates with real commands
+   (`du`, `find`, growth sampling, `tail`, `cat config.json`), finds the cause and
+   asks — once, specifically — whether it may delete old archives and switch logging back.
+4. Approve. The card resolves, the task resumes, AUDA verifies the fix, writes an
+   incident report, stores episodic + procedural memory and returns to **Watching**.
+5. Switch to debug again: the next incident cites your earlier decision. After the
+   second approval AUDA **suggests a rule** so it can handle it without asking next time.
+6. **Computer → Reliability → Freeze the browser** to watch the supervisor recover it.
+
+The same story runs headless as a test:
+
+```bash
+npm test             # unit tests: scheduler, rules compiler, policy, broker idempotency, memory
+npm run e2e          # end-to-end vertical slice against a real core (~2 min)
+```
+
+## Configuration
+
+| Variable | Default | |
+|---|---|---|
+| `AUDA_DATA` | `./data` | Database, workspace, browser profile, secrets key |
+| `AUDA_PORT` | `4610` | |
+| `AUDA_PUBLIC_URL` | `http://localhost:4610` | Used for webhook URLs and device links |
+| `AUDA_TOKEN` | — | Require a token for the UI and API |
+| `AUDA_MASTER_KEY` | generated | Key for the encrypted secret store |
+| `ANTHROPIC_API_KEY` | — | Optional; Claude can also be connected in the UI |
+| `AUDA_CHROMIUM` | auto-detected | Chromium executable for AUDA's browser |
+| `AUDA_COMPUTER_DRIVER` | `local` | `local` · `docker` · `ssh` |
+
+## Deploying
+
+* **Docker:** `docker compose -f deploy/docker-compose.yml up -d`
+* **Proxmox VM:** see [`deploy/proxmox`](deploy/proxmox/README.md) (cloud-init included)
+* **systemd:** [`deploy/auda.service`](deploy/auda.service)
+
+All state lives in `AUDA_DATA`; back it up (or snapshot the VM) and AUDA resumes
+exactly where it was — responsibilities, memory and unfinished tasks included.
+
+## Linking one of your machines
+
+Connections → *Your devices* → name it → run the printed command on that machine:
+
+```bash
+node scripts/auda-link.mjs --server ws://auda.local:4610 --token <token> --allow terminal
+```
+
+Nothing is granted until you switch it on, the device enforces grants locally too,
+and revoking closes the link immediately.
+
+## Architecture
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): module boundaries, state model,
+task and responsibility lifecycles, schema, events, permission model, design system,
+motion system and the glyph.
+
+```
+server/src/
+  core/            db (SQLite/WAL), event bus, change feed, activity
+  agent/           chat → state, intent compiler, presence
+  tasks/           durable task engine
+  responsibilities/
+  playbooks/       server.health · web.watch · github.ci · routine.* · webhook.react · agent
+  scheduler/       cron, fuzzy schedules
+  watchers/        edge-triggered probes
+  memory/          typed memory, recall, consolidation
+  policy/          capabilities, policy engine, rules compiler
+  tools/           tool broker (idempotency, approvals, audit)
+  computer/        drivers, terminal, files, browser, services
+  connectors/      runtime + circuit breakers, GitHub, devices
+  supervisor/      recovery loop
+  models/          model router (Claude, local OpenAI-compatible), budgets
+  gateway/         REST, realtime WebSocket, inbound hooks
+web/src/
+  motion/          spring solver, stroke-morph icons, the Aperture
+  design/          tokens (light/dark), materials, components
+  pages/           Home · Chat · Work · Computer · Memory · Connections · Activity · Settings · Spaces
+```
