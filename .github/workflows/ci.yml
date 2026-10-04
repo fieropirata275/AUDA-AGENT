@@ -32,6 +32,8 @@ jobs:
         run: npm run e2e:reliability
       - name: End-to-end — LM Studio, LAN, team chat
         run: npm run e2e:lan
+      - name: End-to-end — organization, plugins (OAuth/MCP), custom agents, learning
+        run: npm run e2e:org
 
   android:
     name: Android app

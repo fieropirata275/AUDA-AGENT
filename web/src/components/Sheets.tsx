@@ -38,6 +38,29 @@ function StepList({ steps, current, state }: { steps: any[]; current: number; st
   );
 }
 
+/** 👍/👎 on a finished agent task: becomes a training label and, with a comment, a lesson. */
+function Feedback({ task }: { task: any }) {
+  const [rating, setRating] = useState<number | null>(task.rating ?? null);
+  const [comment, setComment] = useState('');
+  const [sent, setSent] = useState(false);
+  const [open, setOpen] = useState(false);
+  const send = async (r: number, c?: string) => { setRating(r); await post(`/api/tasks/${task.id}/feedback`, { rating: r, comment: c }); if (c) { setSent(true); setOpen(false); } };
+  return (
+    <div className="feedback">
+      <span className="small muted grow">{task.agent ? `Did ${task.agent.name} get it right? It learns from your answer.` : 'How did this go?'}</span>
+      <button className={`fb-btn ${rating === 1 ? 'on' : ''}`} aria-pressed={rating === 1} aria-label="Good result" onClick={() => { void send(1); setOpen(true); }}>👍</button>
+      <button className={`fb-btn ${rating === -1 ? 'on bad' : ''}`} aria-pressed={rating === -1} aria-label="Not right" onClick={() => { void send(-1); setOpen(true); }}>👎</button>
+      <AnimatePresence>{open && !sent && (
+        <motion.div className="row" style={{ width: '100%' }} initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} transition={fm.glide}>
+          <input className="input" autoFocus placeholder={rating === 1 ? 'What was good? (optional)' : 'What should it do differently?'} value={comment} onChange={(e) => setComment(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && comment.trim()) void send(rating ?? 1, comment.trim()); }} />
+          <Button size="sm" variant="primary" disabled={!comment.trim()} onClick={() => send(rating ?? 1, comment.trim())}>Teach</Button>
+        </motion.div>
+      )}</AnimatePresence>
+      {sent && <span className="small" style={{ color: 'var(--settled)', width: '100%' }}>Thanks — {task.agent ? `${task.agent.name} saved that as a lesson.` : 'noted.'}</span>}
+    </div>
+  );
+}
+
 function TaskSheet({ id }: { id: string }) {
   const s = useStore();
   const t = s.tasks[id];
@@ -54,7 +77,7 @@ function TaskSheet({ id }: { id: string }) {
       <div className="sheet-head">
         <div className="task-glyph lg"><TaskGlyph state={task.state} attention={task.attention} size={26} /></div>
         <div className="grow">
-          <div className="faint small">{TASK_LABEL[task.state]} · {progressText(task)}</div>
+          <div className="faint small">{task.agent && <span className="agent-tag" style={{ color: task.agent.color }}>{task.agent.emoji} {task.agent.name} · </span>}{TASK_LABEL[task.state]} · {progressText(task)}</div>
           <h2 className="title" style={{ marginTop: 2 }}>{task.title}</h2>
         </div>
         <button className="btn ghost icon" onClick={() => openSheet(null)} aria-label="Close"><Morph shape="close" size={18} /></button>
@@ -65,6 +88,7 @@ function TaskSheet({ id }: { id: string }) {
           <div className="stack" style={{ gap: 18 }}>
             {active && task.nowLine && <motion.p key={task.nowLine} className="now-voice" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}>{task.nowLine}</motion.p>}
             {task.state === 'COMPLETED' && task.result && <div className="outcome"><Morph shape="check" size={18} color="var(--settled)" /><div>{task.result}</div></div>}
+            {['COMPLETED', 'FAILED'].includes(task.state) && !task.parentTaskId && task.playbook === 'agent' && (!s.me || !task.ownerId || task.ownerId === s.me.id) && <Feedback task={task} />}
             {task.state === 'FAILED' && (
               <div className="trouble">
                 <div className="title" style={{ fontSize: 16 }}>AUDA hit a problem</div>
@@ -90,7 +114,7 @@ function TaskSheet({ id }: { id: string }) {
               {task.goal && task.goal !== task.title && <><dt>Goal</dt><dd>{task.goal}</dd></>}
               {task.criteria && <><dt>Done when</dt><dd>{task.criteria}</dd></>}
               <dt>Why it exists</dt>
-              <dd>{task.parentTaskId ? <button className="link" onClick={() => openSheet({ type: 'task', id: task.parentTaskId! })}>Subtask of “{s.tasks[task.parentTaskId]?.title ?? 'a larger task'}”</button> : resp ? <button className="link" onClick={() => openSheet({ type: 'responsibility', id: resp.id })}>Part of “{resp.title}”</button> : task.origin?.type === 'chat' ? 'You asked in chat' : task.origin?.type === 'user' ? 'You created it' : 'AUDA started it'}</dd>
+              <dd>{task.parentTaskId ? <button className="link" onClick={() => openSheet({ type: 'task', id: task.parentTaskId! })}>Subtask of “{s.tasks[task.parentTaskId]?.title ?? 'a larger task'}”</button> : resp ? <button className="link" onClick={() => openSheet({ type: 'responsibility', id: resp.id })}>Part of “{resp.title}”</button> : task.origin?.type === 'chat' ? 'You asked in chat' : task.origin?.type === 'user' ? 'You created it' : task.origin?.type === 'group' ? 'Assigned in the team chat' : task.agent ? `${task.ownerId && s.me && task.ownerId !== s.me.id ? (s.members[task.ownerId]?.name ?? 'Someone') : 'You'} gave it to ${task.agent.name}` : 'AUDA started it'}</dd>
               <dt>Started</dt><dd>{task.startedAt ? `${ago(task.startedAt)} · ${clock(task.startedAt)}` : task.nextEventAt ? until(task.nextEventAt) : 'Not yet'}</dd>
               {task.retryCount > 0 && <><dt>Retries</dt><dd>{task.retryCount} of {task.maxRetries}</dd></>}
             </dl>

@@ -28,6 +28,10 @@ This repository is a working vertical slice, not a mockup:
 | **Supervisor** | An independent loop that detects dead task runs and a hung browser, and recovers them visibly. |
 | **Connections** | AUDA's computer, inbound webhooks, GitHub (CI watching), Claude, and linked devices with explicit, revocable grants. |
 | **Chat** | A control surface that maps language onto persistent state; created objects render inline and stay live. |
+| **Organization** | Optional accounts, roles and one-time invites. Each person has their own chats, tasks, agents and plugin connections; admins supervise everything. |
+| **Plugins** | External apps as agent tools — GitHub, Google Calendar/Drive/Gmail, Slack, Notion, Linear, any remote MCP server, any OpenAPI service. Everyone connects their own account over OAuth (PKCE); writes ask first. |
+| **Custom agents** | One-click specialists from a sentence or a template, with a knowledge base (files, web pages it studies, notes), shareable with the organization. |
+| **Learning** | Each agent learns from its work: a learned re-ranker over its knowledge, lessons and skills written after every task, and 👍/👎 feedback — all local. |
 
 The whole product works **offline without any model** — the built-in playbooks
 and intent compiler handle server health, page watching, CI, webhooks,
@@ -80,6 +84,7 @@ npm run e2e:slice      # the vertical slice above, headless
 npm run e2e:agent      # agent path with a scripted model: review/revise, sub-agents, loops, approvals, crash mid-command
 npm run e2e:reliability# platform drills: DB corruption restore, poison quarantine, frozen-core watchdog, crash loop → safe mode
 npm run e2e:lan        # LM Studio (faithful fake), discovery, pairing, uploads, team chat with @mentions
+npm run e2e:org        # accounts + invites, OAuth/PKCE + refresh, MCP discovery/registration/SSE, shared agents, knowledge, learning
 npm run e2e            # all of them
 ```
 
@@ -100,7 +105,7 @@ Live state: **Settings → Reliability**.
 |---|---|---|
 | `AUDA_DATA` | `./data` | Database, workspace, browser profile, secrets key |
 | `AUDA_PORT` | `4610` | |
-| `AUDA_PUBLIC_URL` | `http://localhost:4610` | Used for webhook URLs and device links |
+| `AUDA_PUBLIC_URL` | `http://localhost:4610` | Used for webhook URLs, invite links and the OAuth redirect URI (`…/api/oauth/callback`) |
 | `AUDA_TOKEN` | — | Require a token for the UI and API |
 | `AUDA_MASTER_KEY` | generated | Key for the encrypted secret store |
 | `ANTHROPIC_API_KEY` | — | Optional; Claude can also be connected in the UI |
@@ -111,6 +116,8 @@ Live state: **Settings → Reliability**.
 | `AUDA_MAX_RSS_MB` | `2048` | Supervisor restarts the core gracefully above this |
 | `AUDA_STEP_TIMEOUT_MS` | `600000` | Default time budget per task step |
 | `AUDA_AGENT_MAX_TURNS` | `80` | Hard cap on model turns per agent task |
+| `AUDA_PLUGIN_TIMEOUT_MS` | `30000` | Time budget for one plugin call |
+| `AUDA_STUDY_INTERVAL_MS` | `3600000` | How often agents re-read their sources and prune weak lessons |
 
 ## Deploying
 
@@ -120,6 +127,43 @@ Live state: **Settings → Reliability**.
 
 All state lives in `AUDA_DATA`; back it up (or snapshot the VM) and AUDA resumes
 exactly where it was — responsibilities, memory and unfinished tasks included.
+
+## Teams, plugins and custom agents
+
+**Organization.** AUDA starts single-user. Open **Organization** (bottom of the
+sidebar) to turn it on: you become the owner, then invite people with one-time
+links (7-day expiry). Members see their own work; owners and admins supervise
+all of it; the Team room is shared. Sessions are HttpOnly cookies (or
+`Authorization: Bearer sess_…` for scripts); phones paired by a member act as
+that member.
+
+**Plugins.** In **Plugins**, add a popular app (register an OAuth app with the
+redirect URI shown — `AUDA_PUBLIC_URL/api/oauth/callback` — and paste its
+client id/secret once), a remote MCP server (AUDA discovers its authorization
+server and registers itself, no setup), or any OpenAPI 3 JSON document (up to
+40 operations become tools). Then each person clicks **Sign in with …** to
+connect *their own* account. Agents call the tools of whoever gave them the
+work — never anyone else's. Reads run freely; anything that changes data goes
+through the approval flow (rules can relax that per app/tool, e.g.
+`github/comment`). Tokens are encrypted in the secret store and refreshed
+automatically.
+
+**Custom agents.** In **Agents**, describe what you need in a sentence (or pick
+a template) and AUDA drafts the role, instructions and starter prompts. Teach
+it by dropping documents (PDF/Word need `pdftotext`/`unzip` on the host),
+adding web pages it re-reads on a schedule, or writing notes. Share it with the
+organization; teammates can use it with their own accounts or duplicate it.
+`@mention` it in Team to hand it work.
+
+**How agents learn.** Retrieval is hybrid (BM25 + embeddings — LM Studio
+`/v1/embeddings` when `kb.embedModel` is set, otherwise a built-in hashed
+embedding that needs no model) and re-ranked by a small per-agent model. After
+each task the agent labels which passages it really used and the re-ranker
+takes a training step; it writes lessons (and skills from approaches that
+worked) into its knowledge base; your 👍/👎 and comments become labels and
+high-confidence lessons; lessons that keep failing to help fade and retire.
+The **Learning** tab shows all of it, and you can export the training data as
+JSONL.
 
 ## Local models with LM Studio
 

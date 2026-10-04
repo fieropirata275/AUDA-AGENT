@@ -94,7 +94,7 @@ data class Message(
     val channel: String,
 )
 
-data class Agent(val id: String, val name: String, val kind: String, val state: String, val nowLine: String?)
+data class Agent(val id: String, val name: String, val kind: String, val state: String, val nowLine: String?, val emoji: String? = null)
 data class ActivityItem(val id: String, val ts: Long, val kind: String, val title: String, val detail: String?)
 data class Conversation(val id: String, val title: String, val channel: String, val updatedAt: Long)
 
@@ -141,7 +141,7 @@ object Parse {
         authorState = o.str("authorState"), attachments = o.optJSONArray("attachments").strings(), channel = o.optString("channel", "web"),
     )
 
-    fun agent(o: JSONObject) = Agent(o.getString("id"), o.optString("name"), o.optString("kind"), o.optString("state"), o.str("nowLine"))
+    fun agent(o: JSONObject) = Agent(o.getString("id"), o.optString("name"), o.optString("kind"), o.optString("state"), o.str("nowLine"), o.str("emoji"))
     fun activity(o: JSONObject) = ActivityItem(o.getString("id"), o.optLong("ts"), o.optString("kind"), o.optString("title"), o.str("detail"))
     fun conversation(o: JSONObject) = Conversation(o.getString("id"), o.optString("title"), o.optString("channel"), o.optLong("updatedAt"))
 }

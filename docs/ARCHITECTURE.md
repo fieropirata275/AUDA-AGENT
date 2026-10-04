@@ -296,3 +296,48 @@ lets the whole agent path run deterministically without an API key.
   with `reply_to_user`. Mentioning a finished agent starts a follow-up with its
   context. Uploads stream into `~/inbox/<date>/…`, folder structure kept, each
   file recorded with why it exists.
+
+## 13. Organization, plugins, custom agents and learning
+
+* **Identity per request.** `resolveUser` maps every request to a person:
+  `AUDA_TOKEN` → owner; a session (`sess_…`, cookie or bearer) → its user; a
+  paired client → the member who approved it; otherwise, with the organization
+  off, the local owner. The handler runs inside `runAs(userId)`
+  (AsyncLocalStorage), and the task engine runs each task as its `owner_id`, so
+  every layer below — memory, plugin credentials, knowledge — can ask
+  `currentUserId()` without threading it through. Realtime batches and the
+  bootstrap snapshot are filtered per viewer by `canSee`; plugin and agent views
+  are re-projected per viewer (connection state, edit rights).
+* **Plugins** (`plugins/`). A plugin row is org-level config (OpenAPI-style
+  tools or an MCP URL, auth endpoints, client id, client secret in the secret
+  broker); `plugin_connections` is per person. OAuth uses authorization code +
+  PKCE (S256) with a one-time `state` that also identifies the person on the
+  open callback route; refresh is single-flight per connection, retried once on
+  a 401, and a refused refresh marks the connection *expired* (the agent gets a
+  permanent "reconnect" error instead of retrying). MCP uses Streamable HTTP
+  (session id, JSON or SSE responses, re-initialise on 404) and discovers auth
+  via protected-resource metadata → authorization-server metadata → dynamic
+  client registration (public client). Calls go through the broker as
+  `plugin.read` (autonomous) or `plugin.write` (approval, `external` risk), so
+  rules, approvals, idempotency and audit apply; a per-plugin circuit breaker
+  and timeouts contain failing services, and responses are wrapped as untrusted
+  content.
+* **Custom agents** (`agents/agents.ts`). Identity + instructions + config
+  (allowed plugins, default "done when", sources, learning flags, re-ranker
+  weights). Tasks carry `agent_id` and `owner_id` (the person who asked); the
+  agent playbook adds the agent's instructions, `search_knowledge` and `learn`
+  tools, the runner's plugin tools (`p_<app>_<id>__<tool>`), and seeds the first
+  message with the top passages from its knowledge base.
+* **Knowledge** (`agents/knowledge.ts`). Documents → ~1,200-character passages
+  (150 overlap, sentence-aware) → FTS5 + vectors. Candidates get features
+  `[bm25, cosine, helped-before, is-lesson, confidence, freshness]` scored by a
+  per-agent logistic regression; at most two passages per document. Every
+  retrieval is logged with its features.
+* **Learning** (`agents/learning.ts`). On `task.completed/failed`: label each
+  logged retrieval by whether its distinctive terms appear in what the agent
+  itself produced (reasoning, tool inputs, answer, files — never the retrieval
+  output), run online SGD on new labels, then reflect (model or heuristics) into
+  deduplicated lessons and skills. Feedback overrides labels and turns comments
+  into lessons; hourly maintenance decays unhelpful lessons and re-reads
+  sources whose content hash changed. Covered end to end by
+  `scripts/e2e-org.mjs`.

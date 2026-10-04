@@ -101,8 +101,10 @@ export function Team() {
     })]);
   };
 
-  const live = agents.filter((a) => a.kind !== 'coordinator' && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(a.state));
-  const recent = agents.filter((a) => a.kind !== 'coordinator' && ['COMPLETED', 'FAILED', 'CANCELLED'].includes(a.state));
+  const working = agents.filter((a) => a.kind !== 'coordinator' && a.kind !== 'custom');
+  const live = working.filter((a) => !['COMPLETED', 'FAILED', 'CANCELLED'].includes(a.state));
+  const recent = working.filter((a) => ['COMPLETED', 'FAILED', 'CANCELLED'].includes(a.state));
+  const specialists = agents.filter((a) => a.kind === 'custom');
 
   return (
     <div className="team">
@@ -116,6 +118,13 @@ export function Team() {
           </button>
         ))}
         {!live.length && <div className="small faint" style={{ padding: '4px 6px' }}>No agents running. Assign work with “/task …”.</div>}
+        {specialists.length > 0 && <div className="label" style={{ margin: '16px 4px 6px' }}>Specialists · @mention to assign</div>}
+        {specialists.map((a) => (
+          <button key={a.id} className="roster-item" onClick={() => pick(a)} title={`Mention ${a.name} to give it work`}>
+            <span className="agent-emoji sm" style={{ background: `color-mix(in oklab, ${a.color ?? 'var(--accent)'} 18%, transparent)` }}>{a.emoji ?? '🤖'}</span>
+            <div className="grow"><div className="ellipsis" style={{ fontWeight: 550 }}>{a.name}</div><div className="small faint ellipsis">{a.nowLine}</div></div>
+          </button>
+        ))}
         {recent.length > 0 && <div className="label" style={{ margin: '16px 4px 6px' }}>Recently finished</div>}
         {recent.slice(0, 8).map((a) => (
           <button key={a.id} className="roster-item done" onClick={() => pick(a)} title="Mention to start a follow-up">
@@ -145,7 +154,7 @@ export function Team() {
           )}
           <AnimatePresence>{suggestions.length > 0 && (
             <motion.div className="mention-pop" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={fm.snap}>
-              {suggestions.map((a) => <button key={a.id} onClick={() => pick(a)}>{a.kind === 'coordinator' ? <GlyphStill size={16} /> : <TaskGlyph state={a.state} size={14} />}<span className="ellipsis">{a.name}</span></button>)}
+              {suggestions.map((a) => <button key={a.id} onClick={() => pick(a)}>{a.kind === 'coordinator' ? <GlyphStill size={16} /> : a.kind === 'custom' ? <span style={{ width: 16, textAlign: 'center' }}>{a.emoji}</span> : <TaskGlyph state={a.state} size={14} />}<span className="ellipsis">{a.name}</span></button>)}
             </motion.div>
           )}</AnimatePresence>
           <div className="composer">

@@ -16,6 +16,8 @@ export async function respond(a) {
     return { text: '{"verdict":"pass","issues":[],"summary":"The result matches the criteria"}' };
   }
   if (a.purpose === 'context handoff') return { text: 'Progress summary for handoff.' };
+  if (a.purpose === 'draft custom agent') return { text: JSON.stringify({ name: 'Torque Expert', emoji: '🔩', description: 'Answers fastening questions from the maintenance manual.', instructions: 'Answer from the manual in your knowledge base. Quote exact values with units.', starters: ['What torque for the M8 bolts?'], criteria: 'The answer quotes the manual value.' }) };
+  if (a.purpose === 'agent reflection') return { text: JSON.stringify({ lessons: [{ title: 'Quote units with torque values', lesson: 'When asked about torque, always quote the value with its unit (Nm) and the bolt size it applies to.' }], skill: { title: 'Answering spec questions', steps: '1. Search the knowledge base. 2. Quote the exact value. 3. Name the source.' } }) };
   if (a.purpose !== 'agent turn') return { text: 'ok' };
 
   const first = typeof a.messages[0].content === 'string' ? a.messages[0].content : '';
@@ -44,6 +46,25 @@ export async function respond(a) {
   if (title.startsWith('Topic ')) {
     if (turn === 0) return { content: [tu('write_file', { path: `${title.slice(6)}.md`, content: `# ${title}\nNotes.\n` })] };
     return { content: [text(`Wrote ${title.slice(6)}.md`)] };
+  }
+
+  // Plugins: find the tool by suffix in whatever this agent was given.
+  const tool = (suffix) => (a.tools ?? []).find((t) => t.name?.startsWith('p_') && t.name.endsWith(`__${suffix}`))?.name;
+  if (title.startsWith('Check my issues')) {
+    if (turn === 0) return tool('search_issues') ? { content: [tu(tool('search_issues'), { q: 'is:open bug' })] } : { content: [text('NO PLUGIN TOOL')] };
+    if (turn === 1) return { content: [tu(tool('comment'), { owner: 'acme', repo: 'app', number: 7, body: 'Looking into this.' })] };
+    const all = JSON.stringify(a.messages);
+    return { content: [text(`Issues checked. ${all.includes('Bob Example') ? 'Saw Bob’s issues.' : 'Did not see Bob’s data.'} Comment ${lastText.includes('comment-created') ? 'posted' : 'not posted'}.`)] };
+  }
+  if (title.startsWith('Forecast')) {
+    if (turn === 0) return tool('get_forecast') ? { content: [tu(tool('get_forecast'), { city: 'Lisbon' })] } : { content: [text('NO MCP TOOL')] };
+    return { content: [text(`Forecast: ${/Sunny[^"\\]*/.exec(lastText)?.[0] ?? 'unknown'}`)] };
+  }
+  if (title.startsWith('What torque')) {
+    const kb = /From your knowledge base[\s\S]*/.exec(first)?.[0] ?? '';
+    const val = /(\d+) ?Nm/.exec(kb)?.[0];
+    if (turn === 0) return { content: [tu('learn', { title: 'Torque table lives in the manual', lesson: 'Fastener torque values are in the maintenance manual, section 4.' })] };
+    return { content: [text(val ? `The M8 flange bolts take ${val} according to the maintenance manual, tightened in a star pattern with calibrated torque wrench.` : 'I could not find it.')] };
   }
 
   if (title.startsWith('Loop forever')) return { content: [tu('terminal', { cmd: 'echo same', why: 'checking' })] };

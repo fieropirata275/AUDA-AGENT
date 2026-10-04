@@ -16,8 +16,9 @@
     "start:core": "NODE_ENV=production tsx server/src/index.ts",
     "typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p web/tsconfig.json --noEmit",
     "test": "tsx --test server/test/*.test.ts",
-    "e2e": "node scripts/e2e.mjs && node scripts/e2e-agent.mjs && node scripts/e2e-reliability.mjs && node scripts/e2e-lan.mjs",
+    "e2e": "node scripts/e2e.mjs && node scripts/e2e-agent.mjs && node scripts/e2e-reliability.mjs && node scripts/e2e-lan.mjs && node scripts/e2e-org.mjs",
     "e2e:lan": "node scripts/e2e-lan.mjs",
+    "e2e:org": "node scripts/e2e-org.mjs",
     "e2e:slice": "node scripts/e2e.mjs",
     "e2e:agent": "node scripts/e2e-agent.mjs",
     "e2e:reliability": "node scripts/e2e-reliability.mjs"

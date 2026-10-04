@@ -201,7 +201,9 @@ fun TeamScreen(vm: AudaViewModel, openTask: (String) -> Unit) {
     LaunchedEffect(ui.group.size) { if (ui.group.isNotEmpty()) list.animateScrollToItem(ui.group.size - 1) }
     val query = Regex("@([\\w-]*)$").find(text)?.groupValues?.get(1)
     val suggestions = if (query != null) ui.agents.filter { it.name.contains(query, ignoreCase = true) }.take(5) else emptyList()
-    val live = ui.agents.filter { it.kind != "coordinator" && it.state !in TERMINAL }
+    val live = ui.agents.filter { it.kind != "coordinator" && it.kind != "custom" && it.state !in TERMINAL }
+    // Custom agents built in the web app: @mention one to give it work.
+    val specialists = ui.agents.filter { it.kind == "custom" }
 
     Column(Modifier.fillMaxSize().imePadding()) {
         Column(Modifier.padding(horizontal = 18.dp, vertical = 10.dp)) {
@@ -214,13 +216,24 @@ fun TeamScreen(vm: AudaViewModel, openTask: (String) -> Unit) {
                 Column(Modifier.width(150.dp)) { Txt(a.name.substringAfter("· "), Type.label, maxLines = 1); Txt(a.nowLine ?: "", Type.label, c.ink3, maxLines = 1) }
             }
         }
+        if (specialists.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Txt("Specialists", Type.label, c.ink3)
+            for (a in specialists) Row(Modifier.raised(14.dp).clickable { if (mentions.none { it.id == a.id }) mentions.add(a) }.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Txt(a.emoji ?: "🤖", Type.body)
+                Txt(a.name, Type.label, maxLines = 1)
+            }
+        }
         LazyColumn(Modifier.weight(1f), state = list, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
             if (ui.group.isEmpty()) item { Empty("Your team", "Everyone working for you, in one room. /task assigns work, @ talks to an agent mid-task, and you can attach files or folders.") }
             items(ui.group, key = { it.id }) { m -> MessageBubble(m, ui.tasks, ui.approvals, openTask) { a, ok -> vm.decide(a, ok) } }
         }
         if (suggestions.isNotEmpty()) Column(Modifier.padding(horizontal = 16.dp).fillMaxWidth().raised(16.dp, Level.Floating).padding(6.dp)) {
             for (a in suggestions) Row(Modifier.fillMaxWidth().clickable { text = text.replace(Regex("@[\\w-]*$"), ""); if (mentions.none { it.id == a.id }) mentions.add(a) }.padding(10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (a.kind == "coordinator") Aperture("available", 18.dp) else TaskGlyph(a.state, size = 14)
+                when (a.kind) {
+                    "coordinator" -> Aperture("available", 18.dp)
+                    "custom" -> Txt(a.emoji ?: "🤖", Type.small)
+                    else -> TaskGlyph(a.state, size = 14)
+                }
                 Txt(a.name, Type.small, maxLines = 1)
             }
         }

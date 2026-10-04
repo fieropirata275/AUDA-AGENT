@@ -4,14 +4,16 @@ import './design/tokens.css';
 import './design/base.css';
 import './design/components.css';
 import { App } from './App';
-import { bootstrap, connect, useStore, getTheme, setTheme } from './lib/store';
+import { bootstrap, connect, useStore, getTheme, setTheme, getState } from './lib/store';
 import { Aperture } from './motion/Aperture';
+import { SignIn } from './pages/Org';
 
 setTheme(getTheme());
 
 function Root() {
   const s = useStore();
-  useEffect(() => { bootstrap().catch(() => setTimeout(() => location.reload(), 2000)); connect(); }, []);
+  useEffect(() => { bootstrap().then(() => { if (!getState().needsLogin) connect(); }).catch(() => setTimeout(() => location.reload(), 2000)); }, []);
+  if (s.ready && s.needsLogin) return <SignIn />;
   if (!s.ready || !s.identity) {
     return <div className="boot"><Aperture state="idle" size={120} /><p className="voice">Waking AUDA…</p></div>;
   }
