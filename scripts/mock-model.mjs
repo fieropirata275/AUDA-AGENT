@@ -67,6 +67,16 @@ export async function respond(a) {
     return { content: [text(val ? `The M8 flange bolts take ${val} according to the maintenance manual, tightened in a star pattern with calibrated torque wrench.` : 'I could not find it.')] };
   }
 
+  // Long-running work, for watching the UI live.
+  if (title.startsWith('Marathon') || title.startsWith('Part ')) {
+    if (turn === 0) return { content: [tu('narrate', { text: `Working through ${title}.` }), tu('terminal', { cmd: 'sleep 45 && echo done', why: 'Long-running work', timeout_sec: 120 })] };
+    return { content: [text(`Finished ${title}.`)] };
+  }
+  if (title.startsWith('Big project')) {
+    if (turn === 0) return { content: [tu('spawn_subtasks', { tasks: ['A', 'B', 'C'].map((t) => ({ title: `Part ${t}`, goal: `Do part ${t}`, done_when: `Part ${t} is done` })) })] };
+    return { content: [text('All parts combined.')] };
+  }
+
   if (title.startsWith('Loop forever')) return { content: [tu('terminal', { cmd: 'echo same', why: 'checking' })] };
 
   if (title.startsWith('Clean the scratch folder')) {

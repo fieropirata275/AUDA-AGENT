@@ -25,6 +25,9 @@ import { Agents } from './pages/Agents';
 import { Plugins } from './pages/Plugins';
 import { Org } from './pages/Org';
 import type { Notification } from './lib/types';
+import { Ambient } from './motion/Ambient';
+import { Pulse } from './motion/Live';
+import { CommandPalette, openPalette } from './components/CommandPalette';
 
 const NAV = [
   { to: '/', label: 'Home', icon: 'dots' },
@@ -94,6 +97,7 @@ export function App() {
 
   return (
     <div className="shell">
+      <Ambient presence={id.presence} load={working} />
       <nav className="rail" aria-label="Main">
         <button className="rail-id" onClick={() => navigate('/')}>
           <Aperture state={id.presence} size={40} />
@@ -132,7 +136,11 @@ export function App() {
       </nav>
 
       <main className="main">
+        <Pulse running={working} waiting={needs} />
         <div className="topbar">
+          <button className="cmdk" onClick={() => openPalette()} aria-label="Search or run a command (Ctrl+K)">
+            <Morph shape="eye" size={15} animate={false} color="var(--ink-3)" /><span>Search, jump, or ask…</span><kbd>{navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}</kbd><kbd>K</kbd>
+          </button>
           <div style={{ position: 'relative' }}>
             <button className="btn ghost icon" aria-label="Notifications" onClick={() => setInbox(!inbox)}>
               <Morph shape={unread ? 'bellRing' : 'bell'} size={20} color={unread ? 'var(--accent)' : 'var(--ink-3)'} />
@@ -179,6 +187,7 @@ export function App() {
       </AnimatePresence>
       <Sheets />
       <Toasts />
+      <CommandPalette />
     </div>
   );
 }
