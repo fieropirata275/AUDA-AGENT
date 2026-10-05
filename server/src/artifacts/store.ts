@@ -5,7 +5,10 @@ import { config } from '../core/config.ts';
 import { insert, now, q, uid } from '../core/db.ts';
 import { changed } from '../core/changes.ts';
 
-const MIME: Record<string, string> = { '.md': 'text/markdown', '.txt': 'text/plain', '.json': 'application/json', '.csv': 'text/csv', '.png': 'image/png', '.jpg': 'image/jpeg', '.html': 'text/html', '.log': 'text/plain', '.diff': 'text/plain' };
+const MIME: Record<string, string> = { '.md': 'text/markdown', '.txt': 'text/plain', '.json': 'application/json', '.csv': 'text/csv', '.png': 'image/png', '.jpg': 'image/jpeg', '.html': 'text/html', '.log': 'text/plain', '.diff': 'text/plain',
+  '.pdf': 'application/pdf', '.svg': 'image/svg+xml', '.webp': 'image/webp', '.gif': 'image/gif',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.zip': 'application/zip' };
 
 export function saveArtifact(o: { name: string; content: string | Buffer; mime?: string; why: string; taskId?: string; responsibilityId?: string; spaceId?: string | null }) {
   const id = uid('art');

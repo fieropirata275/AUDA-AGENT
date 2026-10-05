@@ -1,0 +1,106 @@
+#!/usr/bin/env node
+/**
+ * End-to-end test of AUDA as a general computer operator: an agent researches
+ * on the web, then delivers a spreadsheet with formulas, a chart, a designed
+ * PDF report (with a contents page, the chart and an inlined image), a slide
+ * deck (PowerPoint + PDF + HTML), and a Word document — and reads its own PDF
+ * back. Checks every file's structure and the sandboxing of HTML artifacts.
+ */
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
+
+const PORT = 4695, SEARCH = 4722;
+const BASE = `http://localhost:${PORT}`;
+const data = fs.mkdtempSync(path.join(os.tmpdir(), 'auda-e2e-office-'));
+const root = path.resolve(import.meta.dirname, '..');
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const step = (m) => console.log(`  ✓ ${m}`);
+const must = (c, m) => { if (!c) throw new Error(m); };
+
+// A DuckDuckGo-shaped results page (redirect links included).
+let searches = 0;
+const search = http.createServer((req, res) => {
+  searches++;
+  const q = new URL(req.url, 'http://x').searchParams.get('q');
+  res.writeHead(200, { 'content-type': 'text/html' });
+  res.end(`<html><body>
+    <div class="result"><a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=${encodeURIComponent('https://benchmarks.example.org/saas-2026')}&amp;rut=x">SaaS revenue benchmarks 2026 &amp; growth</a>
+    <a class="result__snippet" href="#">Median growth for <b>${q}</b> was 18% year over year.</a></div>
+    <div class="result"><a rel="nofollow" class="result__a" href="https://stats.example.com/q3">Q3 market statistics</a><a class="result__snippet">Regional splits for EMEA, Americas and APAC.</a></div>
+  </body></html>`);
+});
+
+let core, logs = '';
+const boot = () => {
+  core = spawn(process.execPath, ['--import', 'tsx', 'server/src/index.ts'], { cwd: root, env: { ...process.env, AUDA_DATA: data, AUDA_PORT: String(PORT), AUDA_MOCK_MODEL: path.join(root, 'scripts/mock-model.mjs'), AUDA_SEARCH_URL: `http://127.0.0.1:${SEARCH}/html/` }, stdio: ['ignore', 'pipe', 'pipe'] });
+  core.stdout.on('data', (d) => { logs += d; }); core.stderr.on('data', (d) => { logs += d; });
+};
+const api = async (p, body) => { const r = await fetch(BASE + p, { method: body ? 'POST' : 'GET', headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined }); const j = await r.json(); if (!r.ok) throw new Error(`${p}: ${j.error}`); return j; };
+const raw = (id) => fetch(`${BASE}/api/artifacts/${id}/raw`);
+
+let failed = false;
+try {
+  await new Promise((r) => search.listen(SEARCH, '127.0.0.1', r));
+  boot();
+  for (let i = 0; i < 60; i++) { try { if ((await fetch(`${BASE}/api/health`)).ok) break; } catch { /* booting */ } await sleep(500); }
+  step('core booted (scripted model, fake search engine)');
+
+  const { id } = await api('/api/tasks', { title: 'Quarterly pack', goal: 'Research benchmarks and deliver the quarterly pack: spreadsheet, chart, PDF report, deck and Word document', criteria: 'All five deliverables exist and the report cites sources' });
+  let t;
+  for (let i = 0; i < 240; i++) { t = await api(`/api/tasks/${id}`); if (['COMPLETED', 'FAILED'].includes(t.state)) break; await sleep(500); }
+  must(t.state === 'COMPLETED', `task ended ${t.state}: ${t.diagnosis ?? t.error}\n${logs.split('\n').slice(-30).join('\n')}`);
+  must(/read back OK/.test(t.result) && !/\? pages/.test(t.result), `the agent should read its PDF back: ${t.result}`);
+  must(searches >= 1, 'search_web should have hit the search engine');
+  step(`agent finished: “${t.result}”`);
+
+  const arts = (await api('/api/bootstrap')).artifacts.filter((a) => a.taskId === id);
+  const by = (name) => arts.find((a) => a.name === name);
+  const names = arts.map((a) => a.name).sort();
+  for (const n of ['revenue-model.xlsx', 'revenue-by-region.svg', 'revenue-by-region.png', 'quarterly-report.pdf', 'quarterly-review.pptx', 'quarterly-review.pdf', 'quarterly-review.html', 'quarterly-report.docx']) must(by(n), `missing ${n}; have ${names.join(', ')}`);
+  step(`${arts.length} deliverables saved: ${names.join(', ')}`);
+
+  // PDF report: real PDF, several pages, text extractable, source cited.
+  const pdfBytes = Buffer.from(await (await raw(by('quarterly-report.pdf').id)).arrayBuffer());
+  must(pdfBytes.subarray(0, 5).toString() === '%PDF-', 'report is not a PDF');
+  const pdfPrev = await api(`/api/artifacts/${by('quarterly-report.pdf').id}/preview`);
+  must(pdfPrev.pages >= 3 && /Executive summary/.test(pdfPrev.text) && /benchmarks\.example\.org/.test(pdfPrev.text), `PDF content: ${pdfPrev.pages} pages, ${pdfPrev.text.slice(0, 200)}`);
+  must(pdfBytes.length > 20_000, 'the PDF should embed the chart image and fonts');
+  step(`PDF report: ${pdfPrev.pages} pages (cover, contents, body), cites ${/benchmarks\.example\.org\S*/.exec(pdfPrev.text)[0]}, ${(pdfBytes.length / 1024).toFixed(0)} KB`);
+
+  // Deck: PowerPoint with slides + notes, PDF with one page per slide, HTML sandboxed.
+  const pptPrev = await api(`/api/artifacts/${by('quarterly-review.pptx').id}/preview`);
+  must(pptPrev.kind === 'presentation' && pptPrev.pages === 4 && /Americas leads/.test(pptPrev.text), `pptx: ${JSON.stringify(pptPrev).slice(0, 200)}`);
+  must(pptPrev.siblings.some((s) => s.name === 'quarterly-review.pdf') && pptPrev.siblings.some((s) => s.name === 'quarterly-review.html'), 'deck formats should be linked as siblings');
+  const deckPdf = await api(`/api/artifacts/${by('quarterly-review.pdf').id}/preview`);
+  must(deckPdf.pages === 4, `deck PDF should have 4 pages: ${deckPdf.pages}`);
+  const html = await raw(by('quarterly-review.html').id);
+  const csp = html.headers.get('content-security-policy') ?? '';
+  must(/sandbox allow-scripts/.test(csp) && !/allow-same-origin/.test(csp), `HTML artifacts must be sandboxed: ${csp}`);
+  must((await html.text()).includes('Americas leads'), 'HTML deck content');
+  step('deck: PowerPoint (4 slides, chart, notes) + 4-page PDF + HTML deck served in a sandboxed origin');
+
+  // Spreadsheet: formulas + totals; Word: headings and table.
+  const xl = await api(`/api/artifacts/${by('revenue-model.xlsx').id}/preview`);
+  const rows = xl.sheets[0].rows;
+  must(rows[0][0] === 'Region' && rows[1][3] === '=B2*(1+C2)' && rows[4][0] === 'Total' && String(rows[4][3]).startsWith('=SUM('), `xlsx rows: ${JSON.stringify(rows)}`);
+  const docx = await api(`/api/artifacts/${by('quarterly-report.docx').id}/preview`);
+  must(/Executive summary/.test(docx.text) && /Americas/.test(docx.text), `docx: ${docx.text.slice(0, 160)}`);
+  const png = Buffer.from(await (await raw(by('revenue-by-region.png').id)).arrayBuffer());
+  must(png.subarray(1, 4).toString() === 'PNG', 'chart PNG');
+  step('spreadsheet with formulas and a SUM totals row; Word document with headings and table; chart as SVG + PNG');
+
+  console.log('\n  office work (research, PDF, slides, Word, Excel, charts): PASS\n');
+} catch (e) {
+  failed = true;
+  console.error(`\n  ✕ ${e.message}\n`);
+  console.error(logs.split('\n').slice(-25).join('\n'));
+} finally {
+  core?.kill('SIGTERM');
+  search.close();
+  await sleep(500);
+  fs.rmSync(data, { recursive: true, force: true });
+  process.exit(failed ? 1 : 0);
+}

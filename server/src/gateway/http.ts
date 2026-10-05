@@ -203,9 +203,35 @@ route('GET', '/api/audit', () => q.all('SELECT * FROM audit_log ORDER BY ts DESC
 route('GET', '/api/events', () => q.all('SELECT * FROM events ORDER BY created_at DESC LIMIT 300'));
 route('GET', '/api/artifacts/:id/raw', (req, res) => {
   const a = must(artifactFile(req.params.id));
-  res.writeHead(200, { 'content-type': a.row.mime, 'content-disposition': `inline; filename="${a.row.name}"` });
+  const active = /html|svg|xml|javascript/.test(a.row.mime);
+  res.writeHead(200, {
+    'content-type': a.row.mime, 'x-content-type-options': 'nosniff',
+    'content-disposition': `${req.query.get('download') ? 'attachment' : 'inline'}; filename="${encodeURIComponent(a.row.name)}"`,
+    // Agent-made HTML/SVG runs in an opaque, sandboxed origin: it can't read AUDA's cookies or call its API.
+    ...(active ? { 'content-security-policy': "sandbox allow-scripts allow-popups; default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:; script-src 'unsafe-inline'; media-src data:" } : {}),
+  });
   fs.createReadStream(a.abs).pipe(res);
   return undefined;
+});
+/** What the UI needs to show an artifact well: text/tables for Office files, and its sibling formats. */
+route('GET', '/api/artifacts/:id/preview', async (req) => {
+  const a = must(artifactFile(req.params.id));
+  const ext = path.extname(a.row.name).toLowerCase();
+  const base = a.row.name.slice(0, a.row.name.length - ext.length);
+  const siblings = a.row.task_id ? q.all('SELECT id, name, mime FROM artifacts WHERE task_id = ? AND id != ? ORDER BY created_at', a.row.task_id, a.row.id).filter((x) => x.name.startsWith(`${base}.`)) : [];
+  if (ext === '.xlsx') {
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.readFile(a.abs);
+    const sheets = wb.worksheets.map((ws) => ({ name: ws.name, rowCount: ws.rowCount, rows: (ws.getSheetValues() as any[]).slice(1, 201).map((r) => Array.from((r ?? []).slice(1), (v: any) => v && typeof v === 'object' ? ('formula' in v ? `=${v.formula}` : v instanceof Date ? v.toISOString().slice(0, 10) : 'text' in v ? v.text : 'richText' in v ? v.richText.map((x: any) => x.text).join('') : '') : v ?? '')) }));
+    return { kind: 'spreadsheet', sheets, siblings };
+  }
+  if (['.pptx', '.docx', '.pdf'].includes(ext)) {
+    const { readDocument } = await import('../office/documents.ts');
+    const r = await readDocument(a.abs, 60_000).catch((e) => ({ text: `Couldn't read: ${(e as Error).message}`, kind: 'error', pages: undefined }));
+    return { kind: r.kind, text: r.text, pages: r.pages, siblings };
+  }
+  return { kind: 'file', siblings };
 });
 route('POST', '/api/notifications/read', () => { q.run('UPDATE notifications SET read_at = ? WHERE read_at IS NULL', now()); for (const n of q.all('SELECT id FROM notifications ORDER BY created_at DESC LIMIT 80')) changed('notification', n.id); return { ok: true }; });
 

@@ -20,6 +20,8 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
+      - name: Document tools (pdftotext/pdfinfo for reading PDFs)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq poppler-utils
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
@@ -34,6 +36,9 @@ jobs:
         run: npm run e2e:lan
       - name: End-to-end — organization, plugins (OAuth/MCP), custom agents, learning
         run: npm run e2e:org
+      - name: End-to-end — office work (research, PDF, slides, Word, Excel)
+        run: npm run e2e:office
+        env: { AUDA_CHROMIUM: /usr/bin/google-chrome }
 
   android:
     name: Android app

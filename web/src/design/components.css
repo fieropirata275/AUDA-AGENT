@@ -580,3 +580,20 @@ kbd { display: inline-grid; place-items: center; min-width: 20px; height: 20px; 
 .recap-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .recap-foot { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
 @media (prefers-reduced-motion: reduce) { .wall-feed-track, .wall-dot, .led.busy, .led.warn, .wall-panel.needs { animation: none; } }
+
+/* ─── Document previews ──────────────────────────────────────────────────── */
+.doc-frame { width: 100%; height: 72vh; border: 0; border-radius: 12px; background: var(--well); box-shadow: var(--shadow-well); }
+.deck-frame { width: 100%; aspect-ratio: 16 / 9; border: 0; border-radius: 12px; background: #0d0b09; box-shadow: var(--shadow-raised); }
+.xlsx-tabs { display: flex; gap: 4px; margin-bottom: 8px; flex-wrap: wrap; }
+.xlsx-tabs button { border: 0; background: var(--well); padding: 6px 12px; border-radius: 8px; font-size: 13px; color: var(--ink-2); }
+.xlsx-tabs button[aria-pressed="true"] { background: var(--raised); box-shadow: var(--shadow-raised); color: var(--ink); font-weight: 600; }
+.xlsx-scroll { overflow: auto; max-height: 62vh; border-radius: 10px; box-shadow: var(--shadow-well); }
+.xlsx table { margin: 0; white-space: nowrap; }
+.xlsx tr.head td { font-weight: 650; background: var(--accent-soft); position: sticky; top: 0; }
+.xlsx td.rn { color: var(--ink-4); text-align: right; width: 1%; background: var(--well); }
+.xlsx td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.xlsx td.fx { color: var(--accent); font-family: var(--font-mono); font-size: 12px; }
+.doc-text .raw { white-space: pre-wrap; max-height: 62vh; overflow: auto; }
+.slide-text { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 10px; background: var(--raised); box-shadow: var(--shadow-raised); margin-bottom: 8px; }
+.slide-text span { color: var(--ink-2); font-size: 13.5px; }
+.file-ico.ft-pdf { color: #c4362b; } .file-ico.ft-pptx { color: #c25e2c; } .file-ico.ft-docx { color: #2f5bd3; } .file-ico.ft-xlsx { color: #2f8f6a; }
