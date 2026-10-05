@@ -20,7 +20,7 @@ import { artifactFile } from '../artifacts/store.ts';
 import { computerView, setController, controller, terminal, files, browser, services } from '../computer/index.ts';
 import { connectGitHub, disconnectGitHub } from '../connectors/github.ts';
 import { setConnector, CATALOG } from '../connectors/runtime.ts';
-import { putSecret, deleteSecret } from '../secrets/broker.ts';
+import { putSecret, deleteSecret, resolveSecret } from '../secrets/broker.ts';
 import { createDevice, setGrants, revokeDevice } from '../connectors/devices.ts';
 import { modelSettings } from '../models/router.ts';
 import { capabilities } from '../policy/capabilities.ts';
@@ -31,6 +31,7 @@ import { checkNow } from '../watchers/runner.ts';
 import { authorize, resolveUser, requestPairing, pairingStatus, decidePairing, revokeClient } from './pairing.ts';
 import { card } from './discovery.ts';
 import { detect as lmDetect, connect as lmConnect, disconnect as lmDisconnect } from '../connectors/lmstudio.ts';
+import { EMBEDDING_SUGGESTION, downloadModel as downloadLmModel, hardware, isLocalUrl, lmsBinary, rankModels, runSetup as runLmSetup, setupState as lmSetupState, suggest } from '../connectors/lmstudio-setup.ts';
 import { listModels } from '../models/openai.ts';
 import { agents, handleGroupMessage, messageAgent, saveUpload, GROUP_ID } from '../agent/group.ts';
 import { system } from '../core/system.ts';
@@ -366,6 +367,37 @@ route('POST', '/api/lmstudio/connect', async (req) => {
   catch (e) { throw new HttpError(400, (e as Error).message); }
 });
 route('DELETE', '/api/lmstudio', () => { lmDisconnect(); activity('user', 'Disconnected LM Studio'); return { ok: true }; });
+/** Everything setup needs to decide: this machine, the CLI, servers found, models ranked for this machine, downloads that fit. */
+route('GET', '/api/lmstudio/doctor', async (req) => {
+  const found = await lmDetect();
+  const baseUrl = String(req.query.get('baseUrl') ?? modelSettings().local?.baseUrl ?? (found.find((f) => f.flavor === 'lmstudio') ?? found[0])?.baseUrl ?? '');
+  const hw = !baseUrl || isLocalUrl(baseUrl) ? await hardware() : null;
+  let models: any[] = [], api: string | null = null, error: string | null = null;
+  if (baseUrl) {
+    try { const r = await listModels(baseUrl, resolveSecret(modelSettings().local?.apiKeySecret)); models = r.models; api = r.api; }
+    catch (e) { error = (e as Error).message; }
+  }
+  return { baseUrl: baseUrl || null, api, error, hardware: hw, lms: lmsBinary(), local: baseUrl ? isLocalUrl(baseUrl) : true, found: found.map((f) => ({ baseUrl: f.baseUrl, flavor: f.flavor, models: f.models.length })), models, ranked: rankModels(models, hw), suggestions: suggest(hw), embedding: EMBEDDING_SUGGESTION, hasEmbeddings: models.some((m) => m.type === 'embeddings'), setup: lmSetupState(), platform: process.platform };
+});
+/** One click: find/start the server, (download,) pick, load with a real context, probe, measure, connect. Progress arrives on the settings feed. */
+route('POST', '/api/lmstudio/setup', (req) => {
+  const { baseUrl, model, download, apiKey, roles } = req.body ?? {};
+  void runLmSetup({ baseUrl: baseUrl || undefined, model: model || undefined, download: download || undefined, apiKey: apiKey || undefined, roles: Array.isArray(roles) ? roles : undefined }).then((r) => {
+    if (r.outcome === 'connected' || r.outcome === 'text-only') activity('user', `Set up LM Studio: ${r.result!.model}`, { detail: r.message });
+  });
+  return { started: true };
+});
+route('POST', '/api/lmstudio/download-embeddings', async () => {
+  const l = modelSettings().local;
+  if (!l?.baseUrl) throw new HttpError(400, 'Connect LM Studio first');
+  try {
+    await downloadLmModel(l.baseUrl, EMBEDDING_SUGGESTION.key, () => undefined);
+    const m = (await listModels(l.baseUrl, resolveSecret(l.apiKeySecret))).models.find((x) => x.type === 'embeddings');
+    if (m) { setSetting('kb.embedModel', m.id); changed('settings', 'settings'); }
+    activity('user', `Agents now search knowledge with ${m?.id ?? EMBEDDING_SUGGESTION.name}`);
+    return { model: m?.id ?? null };
+  } catch (e) { throw new HttpError(400, (e as Error).message); }
+});
 
 // ─── group chat, agents, files ───────────────────────────────────────────────
 

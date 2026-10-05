@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useStore } from '../lib/store';
 import { api, post } from '../lib/api';
+import { LocalSetup } from '../components/LocalSetup';
 import { Button, Toggle, Empty } from '../components/controls';
 import { Morph } from '../motion/Morph';
 import { fm } from '../motion/spring';
@@ -73,7 +74,7 @@ function ConnectorCard({ c, cat }: { c?: Connector; cat: CatalogItem }) {
 
 const ROLE_LABEL: Record<string, string> = { reasoning: 'Agents & chat', utility: 'Summaries & rules', coding: 'Code & CI', vision: 'Images' };
 
-/** LM Studio: detect → pick a model → probe tool calling → connect. */
+/** LM Studio: guided one-click setup, with the manual controls under Advanced. */
 function LmStudioCard({ c }: { c?: Connector }) {
   const s = useStore();
   const local = s.settings?.models.local;
@@ -83,6 +84,7 @@ function LmStudioCard({ c }: { c?: Connector }) {
   const [model, setModel] = useState(local?.model ?? '');
   const [roles, setRoles] = useState<string[]>(['reasoning', 'utility', 'coding', 'vision']);
   const [busy, setBusy] = useState<'' | 'detect' | 'connect'>('');
+  const [apiKey, setApiKey] = useState('');
   const [msg, setMsg] = useState<{ tone: string; text: string } | null>(null);
   const connected = c?.state === 'connected' && local?.baseUrl;
   const detect = async () => {
@@ -103,7 +105,7 @@ function LmStudioCard({ c }: { c?: Connector }) {
   const connect = async () => {
     setBusy('connect'); setMsg(null);
     try {
-      const r = await post('/api/lmstudio/connect', { baseUrl, model, roles });
+      const r = await post('/api/lmstudio/connect', { baseUrl, model, roles, ...(apiKey ? { apiKey } : {}) });
       setMsg(r.tools ? { tone: 'settled', text: `Connected. ${model} can call tools, so it can run agents.` } : { tone: 'attention', text: `Connected for text tasks. ${model} didn’t call the test tool, so agents will need a tool-capable model (e.g. Qwen3, Llama 3.1+, Mistral Small).` });
     } catch (e) { setMsg({ tone: 'problem', text: (e as Error).message }); } finally { setBusy(''); }
   };
@@ -117,11 +119,15 @@ function LmStudioCard({ c }: { c?: Connector }) {
           {c?.error && <div className="small" style={{ color: 'var(--problem)', marginTop: 4 }}>{c.error}</div>}
         </div>
       </div>
+      <div style={{ marginTop: 14 }}><LocalSetup /></div>
+      <details className="lsu-adv">
+        <summary className="small">Advanced — choose the address, token, model and roles yourself</summary>
       <div className="stack" style={{ marginTop: 12 }}>
         <div className="row">
           <input className="input" placeholder="http://127.0.0.1:1234" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} onBlur={() => baseUrl && loadModels()} />
           <Button size="sm" busy={busy === 'detect'} onClick={detect}>Find</Button>
         </div>
+        <input className="input" type="password" autoComplete="off" placeholder="API token (only if LM Studio requires authentication)" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
         {found && found.length > 1 && <div className="row wrap" style={{ gap: 6 }}>{found.map((f) => <button key={f.baseUrl} className={`chip btnlike ${f.baseUrl === baseUrl ? 'accent' : ''}`} onClick={() => { setBaseUrl(f.baseUrl); setModels(f.models.filter((m: any) => m.type !== 'embeddings')); }}>{f.baseUrl}</button>)}</div>}
         {models.length > 0 && (
           <div className="model-list">{models.map((m) => (
@@ -141,6 +147,7 @@ function LmStudioCard({ c }: { c?: Connector }) {
           <Button size="sm" variant="primary" busy={busy === 'connect'} disabled={!baseUrl || !model || !roles.length} onClick={connect}>{connected ? 'Reconnect' : 'Test & connect'}</Button>
         </div>
       </div>
+      </details>
     </motion.article>
   );
 }

@@ -79,13 +79,15 @@ export const clientView = (c: Row) => ({ id: c.id, name: c.name, platform: c.pla
 export const deviceView = (d: Row) => ({ id: d.id, name: d.name, state: d.state, platform: d.platform, grants: json(d.capabilities_json, {}), lastSeenAt: d.last_seen_at, createdAt: d.created_at, revokedAt: d.revoked_at });
 export const identityView = (i: Row) => ({ id: i.id, name: i.name, userName: i.user_name, presence: i.presence, narration: i.narration, subject: i.presence_subject, updatedAt: i.updated_at });
 
+import { lmsBinary, setupState } from '../connectors/lmstudio-setup.ts';
+
 export function settingsView() {
   const m = modelSettings();
   return {
     notificationPrefs: { ...DEFAULT_PREFS, ...getSetting('notifications.prefs', {}) },
     notificationWebhook: getSetting('notifications.webhook', '') ? 'configured' : '',
     sound: getSetting('ui.sound', false),
-    models: { roles: m.roles, dailyBudget: m.dailyBudget, monthlyBudget: m.monthlyBudget, local: m.local, anthropicConnected: providerReady({ provider: 'anthropic', model: '' }), anthropicFromEnv: !m.anthropicSecret && !!process.env.ANTHROPIC_API_KEY },
+    models: { roles: m.roles, dailyBudget: m.dailyBudget, monthlyBudget: m.monthlyBudget, local: m.local, anthropicConnected: providerReady({ provider: 'anthropic', model: '' }), anthropicFromEnv: !m.anthropicSecret && !!process.env.ANTHROPIC_API_KEY, localSetup: setupState(), lms: !!lmsBinary() },
     spend: spend(),
     capabilities: Object.values(capabilities).map((c) => ({ id: c.id, title: c.title, group: c.group, risk: c.risk, default: c.level, level: effectiveLevel(c.id) })),
     concurrency: getSetting('engine.concurrency', 3),

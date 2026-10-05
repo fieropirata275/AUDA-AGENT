@@ -283,6 +283,27 @@ lets the whole agent path run deterministically without an API key.
   OpenAI-compatible server (`models/openai.ts`), with tool calling translated
   both ways. LM Studio is detected on the usual addresses, connected after a
   real tool-calling probe, and health-checked; a circuit breaker protects it.
+* **Zero-touch LM Studio** (`connectors/lmstudio-setup.ts`). One orchestrated,
+  single-flight run — find → server → model → load → tools → speed → connect —
+  whose step-by-step state rides on the settings feed, so every client shows it
+  live. It starts the server with the `lms` CLI when LM Studio is on this
+  machine. It reads hardware (RAM, `nvidia-smi` VRAM, Apple unified memory) into
+  a fast/max memory budget and ranks models from LM Studio's v1 list (tool use,
+  size vs budget, context, loaded). It downloads (`POST /api/v1/models/download`
+  + status polling) and loads with an explicit `context_length`, stepping down
+  32k → 16k → 8k when a load fails for memory. It runs automatically once on
+  first run (nothing configured, no Claude key); `AUDA_LMSTUDIO_AUTO=0` turns
+  that off, and a deliberate disconnect is never undone.
+* **Healing.** `withHealing` wraps every local call: connection refused →
+  restart the server with `lms` (≤1/min) and reload the model; "not loaded"
+  → load at the remembered context; context overflow → reload at double the
+  window (up to the model's maximum) and remember it. Each is retried once,
+  single-flight, and logged as a recovery. The health loop also keeps a managed
+  server running and preloads an evicted model before the next call, so a
+  just-in-time load never runs with a small default context. Covered by
+  `server/test/lmstudio.test.ts` and `scripts/e2e-lmstudio.mjs` (a fake `lms`
+  CLI and a fake LM Studio with the v1 API, JIT off, memory limits, eviction
+  and crashes).
 * **Discovery.** Each instance has a stable id and a name, advertises
   `_auda._tcp` over mDNS, answers `AUDA_DISCOVER` UDP broadcasts on port 4611,
   and serves `GET /api/discover` (no secrets).

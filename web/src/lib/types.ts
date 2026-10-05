@@ -61,6 +61,17 @@ export interface Computer { id: string; name: string; state: string; controller:
 export interface Capability { id: string; title: string; group: string; risk: string; default: string; level: string }
 export interface Settings {
   notificationPrefs: Record<string, string>; notificationWebhook: string; sound: boolean; concurrency: number;
-  models: { roles: Record<string, { provider: string; model: string }>; dailyBudget?: number; monthlyBudget?: number; local?: { baseUrl: string; model: string; kind?: string; tools?: boolean; contextLength?: number }; anthropicConnected: boolean; anthropicFromEnv: boolean };
+  models: { roles: Record<string, { provider: string; model: string }>; dailyBudget?: number; monthlyBudget?: number; local?: { baseUrl: string; model: string; kind?: string; tools?: boolean; contextLength?: number; manage?: boolean; desiredContext?: number; api?: string; tps?: number }; anthropicConnected: boolean; anthropicFromEnv: boolean; localSetup?: LocalSetupState | null; lms?: boolean };
   spend: { today: number; month: number }; capabilities: Capability[]; agentVerify: boolean; agentWebSearch: boolean; instanceName: string; requirePairing: boolean;
+}
+
+export interface LocalSetupStep { id: string; label: string; state: 'pending' | 'active' | 'done' | 'failed' | 'skipped'; detail?: string }
+export interface LocalSuggestion { key: string; name: string; gb: number; why: string; recommended?: boolean }
+export interface LocalRanked { id: string; score: number; tools: 'yes' | 'likely' | 'no'; fits: 'fast' | 'slow' | 'no' | 'unknown'; gb?: number; context?: number; loaded: boolean; reasons: string[] }
+export interface LocalHardware { summary: string; totalGb: number; fastGb: number; maxGb: number; gpus: { name: string; vramGb: number }[]; unified: boolean; platform: string }
+export interface LocalSetupState {
+  running: boolean; auto: boolean; firstRun: boolean; startedAt: number; finishedAt?: number; baseUrl?: string; steps: LocalSetupStep[];
+  download?: { model: string; pct: number; downloadedBytes: number; totalBytes: number; bytesPerSecond?: number; eta?: string };
+  outcome?: 'connected' | 'text-only' | 'needs-model' | 'no-server' | 'failed'; message?: string; suggestions?: LocalSuggestion[]; ranked?: LocalRanked[]; hardware?: LocalHardware;
+  result?: { model: string; context?: number; tps?: number; tools: boolean; embeddings?: string };
 }

@@ -19,6 +19,9 @@ import { greeting, ago } from '../lib/time';
 import { navigate } from '../lib/router';
 import { Composer } from './Chat';
 import { openSheet } from '../components/ui';
+import { LocalSetup } from '../components/LocalSetup';
+import { Morph } from '../motion/Morph';
+import { Button } from '../components/controls';
 
 export function Home() {
   const s = useStore();
@@ -43,6 +46,14 @@ export function Home() {
     { k: 'Later', n: later.length + resps.reduce((n, r) => n + r.schedules.filter((x) => x.enabled).length, 0), to: '/work?view=scheduled' },
   ];
 
+  const [firstRunHidden, setFirstRunHidden] = useState(() => { try { return localStorage.getItem('auda.firstRun.hidden') === '1'; } catch { return false; } });
+  const hideFirstRun = () => { setFirstRunHidden(true); try { localStorage.setItem('auda.firstRun.hidden', '1'); } catch { /* private mode */ } };
+  const mind = s.settings?.models;
+  const ls = mind?.localSetup;
+  const justConnected = !!ls?.firstRun && !ls.running && (ls.outcome === 'connected' || ls.outcome === 'text-only') && Date.now() - (ls.finishedAt ?? 0) < 90_000;
+  const noModel = !!mind && !mind.anthropicConnected && !mind.local?.baseUrl;
+  const needsMind = (noModel && (!firstRunHidden || !!ls?.running)) || (justConnected && !firstRunHidden);
+
   return (
     <div className="home">
       <section className="presence">
@@ -66,6 +77,8 @@ export function Home() {
       </section>
 
       <div className="home-compose"><Composer placeholder="Give AUDA something to handle, or ask what it's doing…" compact /></div>
+
+      <AnimatePresence>{needsMind && <FirstRun key="first-run" done={justConnected} onHide={hideFirstRun} />}</AnimatePresence>
 
       <LayoutGroup>
         <AnimatePresence>
@@ -126,4 +139,31 @@ function useOrbitSize() {
   const [n, setN] = useState(pick);
   useEffect(() => { const f = () => setN(pick()); addEventListener('resize', f); return () => removeEventListener('resize', f); }, []);
   return n;
+}
+
+/** First run: AUDA works without a model, but open-ended work needs one — local (guided) or Claude. */
+function FirstRun({ done, onHide }: { done: boolean; onHide: () => void }) {
+  useEffect(() => { if (!done) return; const t = setTimeout(onHide, 45_000); return () => clearTimeout(t); }, [done]); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <motion.section className="section" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, height: 0, marginTop: 0 }} transition={fm.glide}>
+      <div className="card lift lsu-first">
+        <div className="row" style={{ alignItems: 'flex-start', gap: 14 }}>
+          <div className="conn-plug"><Morph shape="wave" size={24} color="var(--accent)" /></div>
+          <div className="grow">
+            <h2 className="title" style={{ fontSize: 18 }}>{done ? 'AUDA has a mind of its own now' : 'Give AUDA a mind'}</h2>
+            <p className="small muted" style={{ margin: '3px 0 0' }}>{done ? 'It runs on your hardware: ask for research, a report, a deck or some code, and it works on it by itself.' : <>AUDA already watches, checks and reminds on its own. For open-ended work — research, documents, decks, code — it needs a model. Run one on your own hardware (private and free), or connect Claude.</>}</p>
+          </div>
+          <button className="btn ghost sm icon" aria-label="Not now" title="Not now" onClick={onHide}><Morph shape="close" size={14} /></button>
+        </div>
+        <div className={`lsu-first-grid ${done ? 'one' : ''}`}>
+          <div className="lsu-first-pane"><div className="lsu-eyebrow">On your computer · LM Studio</div><LocalSetup compact /></div>
+          {!done && <div className="lsu-first-pane alt">
+            <div className="lsu-eyebrow">In the cloud · Claude</div>
+            <p className="small muted" style={{ margin: '0 0 10px' }}>The most capable option for long, open-ended work. Bring an Anthropic API key.</p>
+            <Button size="sm" icon="arrowRight" onClick={() => navigate('/connections')}>Connect Claude</Button>
+          </div>}
+        </div>
+      </div>
+    </motion.section>
+  );
 }
