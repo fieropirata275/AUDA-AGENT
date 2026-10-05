@@ -28,7 +28,7 @@ const tone = (t: Task) =>
 const speed = (t: Task) =>
   t.state === 'RUNNING' ? 0.22 : t.state === 'READY' ? 0.14 : t.state === 'RECOVERING' || t.state === 'RETRYING' ? -0.18 : t.state === 'WAITING_USER' ? 0 : 0.04;
 
-export function Constellation({ tasks, state, flash, size = 360 }: { tasks: Task[]; state: string; flash?: number; size?: number }) {
+export function Constellation({ tasks, state, flash, size = 360, reactive = false }: { tasks: Task[]; state: string; flash?: number; size?: number; reactive?: boolean }) {
   const reduced = prefersReducedMotion();
   const c = size / 2;
   const ring = size * 0.445;
@@ -132,7 +132,7 @@ export function Constellation({ tasks, state, flash, size = 360 }: { tasks: Task
       </svg>
       {ripples.map((r) => <span key={r} className="ripple" style={{ left: c, top: c, width: glyph, height: glyph }} />)}
       <div className="core" style={{ left: c - glyph / 2, top: c - glyph / 2, width: glyph, height: glyph }}>
-        <Aperture state={state} size={glyph} flash={flash} />
+        <Aperture state={state} size={glyph} flash={flash} reactive={reactive} />
       </div>
       {list.map((n) => (
         <button key={n.id} type="button" className={`sat ${n.parent ? 'moon' : ''} ${n.task.state === 'WAITING_USER' ? 'needs' : ''}`}

@@ -81,7 +81,7 @@ definePlaybook({
     },
   },
   responsibility: {
-    describe: (c) => `Checking ${c.url} every ${c.intervalSec >= 3600 ? `${Math.round(c.intervalSec / 3600)} h` : `${Math.round(c.intervalSec / 60)} min`}${c.keywords?.length ? ` for ${c.keywords.join(', ')}` : ''}`,
+    describe: (c) => `Checking ${c.url} every ${c.intervalSec >= 3600 ? `${Math.round(c.intervalSec / 3600)} h` : c.intervalSec >= 60 ? `${Math.round(c.intervalSec / 60)} min` : `${c.intervalSec} s`}${c.keywords?.length ? ` for ${c.keywords.join(', ')}` : ''}`,
     setup(resp) {
       const c = json<any>(resp.config_json, {});
       addWatcher(resp.id, 'url', { url: c.url, keywords: c.keywords }, c.intervalSec ?? 3600, `Page ${c.url}`);

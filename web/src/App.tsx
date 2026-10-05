@@ -28,6 +28,9 @@ import type { Notification } from './lib/types';
 import { Ambient } from './motion/Ambient';
 import { Pulse } from './motion/Live';
 import { CommandPalette, openPalette } from './components/CommandPalette';
+import { Voice, VoiceButton } from './components/Voice';
+import { Recap } from './components/Recap';
+import { Wall } from './pages/Wall';
 
 const NAV = [
   { to: '/', label: 'Home', icon: 'dots' },
@@ -95,6 +98,9 @@ export function App() {
   const section = '/' + (parts[0] ?? '');
   const page = { '/': <Home />, '/chat': <Chat />, '/work': <Work />, '/computer': <Computer />, '/memory': <Memory />, '/connections': <Connections />, '/activity': <Activity />, '/settings': <Settings />, '/spaces': <Spaces />, '/team': <Team />, '/agents': <Agents />, '/plugins': <Plugins />, '/org': <Org />, '/join': <Org /> }[section] ?? <Home />;
 
+  // Wall mode is the whole screen: no rail, no chrome.
+  if (section === '/wall') return <><Ambient presence={id.presence} load={working} /><Wall /><Sheets /><CommandPalette /><Voice /></>;
+
   return (
     <div className="shell">
       <Ambient presence={id.presence} load={working} />
@@ -141,6 +147,8 @@ export function App() {
           <button className="cmdk" onClick={() => openPalette()} aria-label="Search or run a command (Ctrl+K)">
             <Morph shape="eye" size={15} animate={false} color="var(--ink-3)" /><span>Search, jump, or ask…</span><kbd>{navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}</kbd><kbd>K</kbd>
           </button>
+          <VoiceButton />
+          <button className="btn ghost icon" aria-label="Wall display" title="Wall display — for a monitor across the room" onClick={() => navigate('/wall')}><Morph shape="sun" size={19} color="var(--ink-3)" animate={false} /></button>
           <div style={{ position: 'relative' }}>
             <button className="btn ghost icon" aria-label="Notifications" onClick={() => setInbox(!inbox)}>
               <Morph shape={unread ? 'bellRing' : 'bell'} size={20} color={unread ? 'var(--accent)' : 'var(--ink-3)'} />
@@ -188,6 +196,8 @@ export function App() {
       <Sheets />
       <Toasts />
       <CommandPalette />
+      <Voice />
+      <Recap />
     </div>
   );
 }

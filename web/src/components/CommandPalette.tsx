@@ -13,6 +13,8 @@ import { Morph } from '../motion/Morph';
 import { TaskGlyph, TASK_LABEL } from './glyphs';
 import { fm } from '../motion/spring';
 import { sound } from '../lib/sound';
+import { toggleVoice } from './Voice';
+import { voiceSupported } from '../lib/voice';
 
 interface Item { id: string; group: string; title: string; hint?: string; icon: ReactNode; keywords?: string; run: () => void | Promise<void> }
 
@@ -76,6 +78,8 @@ export function CommandPalette() {
       { id: 'a:agent', group: 'Actions', title: 'Create an agent…', hint: 'one click', icon: <Morph shape="progress" size={16} animate={false} />, keywords: 'new specialist custom', run: go('/agents') },
       { id: 'a:plugin', group: 'Actions', title: 'Connect an app…', hint: 'GitHub, Google, Slack, MCP…', icon: <Morph shape="unplugged" size={16} animate={false} />, keywords: 'plugin oauth integration', run: go('/plugins') },
       { id: 'a:theme', group: 'Actions', title: `Switch to ${getTheme() === 'dark' ? 'light' : 'dark'} theme`, icon: <Morph shape={getTheme() === 'dark' ? 'sun' : 'moon'} size={16} animate={false} />, keywords: 'appearance mode', run: () => { setTheme(getTheme() === 'dark' ? 'light' : 'dark'); close(); } },
+      ...(voiceSupported() ? [{ id: 'a:voice', group: 'Actions', title: 'Talk to AUDA', hint: 'or hold Space', icon: <Morph shape="wave" size={16} animate={false} />, keywords: 'voice speak microphone', run: () => { close(); setTimeout(toggleVoice, 150); } }] : []),
+      { id: 'a:wall', group: 'Actions', title: 'Wall display', hint: 'full-screen, for a monitor', icon: <Morph shape="sun" size={16} animate={false} />, keywords: 'noc tv kiosk monitor dashboard fullscreen', run: go('/wall') },
       ...(s.me && (s.me.role === 'owner' || s.me.role === 'admin') ? [{ id: 'a:invite', group: 'Actions', title: 'Invite someone', icon: <Morph shape="plus" size={16} animate={false} />, keywords: 'team member org', run: go('/org') }] : []),
       ...PAGES.map(([to, title, icon]) => ({ id: `p:${to}`, group: 'Go to', title, icon: <Morph shape={icon} size={16} animate={false} />, run: go(to) })),
       ...Object.values(s.customAgents).map((a) => ({ id: `ag:${a.id}`, group: 'Agents', title: a.name, hint: a.description ?? undefined, icon: <span className="pal-emoji">{a.emoji}</span>, keywords: 'agent', run: go(`/agents/${a.id}`) })),
