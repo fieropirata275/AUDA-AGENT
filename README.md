@@ -22,6 +22,9 @@ This repository is a working vertical slice, not a mockup:
 |---|---|
 | **Presence** | A morphing glyph (“the Aperture”) and a one-sentence narration derived from what AUDA is actually doing — never a spinner. Every agent at work orbits it as a live satellite (sub-agents as moons); an ambient aurora follows AUDA’s mood; ceramic surfaces catch the light under your pointer. |
 | **⌘K** | One palette to jump anywhere, find any task, agent, plugin or memory, run actions, ask AUDA, or hand work to an agent with `@name …`. |
+| **Voice** | Hold Space (or tap the mic) and just say it. The glyph moves with your voice, your words appear as you speak, and AUDA answers on screen — and aloud, if you like. |
+| **Wall mode** | `/wall` turns AUDA into a live display for a monitor across the room: the work constellation, what needs a person, what's running and watched, system health, a clock and an activity stream. The cursor hides when idle; `F` for fullscreen. |
+| **While you were away** | Come back after a while and get the story in seconds: what got done, what needs you, what your agents learned, what AUDA recovered from on its own. |
 | **Responsibilities vs tasks** | Ongoing goals (“keep demo-api healthy”) own watchers, schedules and triggers, spawn finite tasks, and return to *Watching* when a task ends. |
 | **Durable task engine** | Leases, heartbeats, per-step checkpoints, retries with exponential backoff, crash recovery that resumes from the last completed step. |
 | **Tool broker + policy engine** | Every side effect goes through capabilities with autonomy levels, natural-language rules compiled to policy, specific approval cards, idempotency keys and an audit log. |
@@ -50,6 +53,11 @@ reports, reminders, rules and memory. Connect Claude to unlock open-ended work.
 | **Agents.** One-click specialists from a sentence or a template. | **Learning.** What it has learned to value, its lessons, and how accurate its ranking is. |
 | ![A finished agent task with feedback](docs/images/task-feedback.png) | ![Plugins](docs/images/plugins.png) |
 | **Feedback.** 👍/👎 and comments become training signal and lessons. | **Plugins.** Each person connects their own account; writes ask first. |
+
+| ![Wall mode on a 1080p display](docs/images/wall.png) | ![Talking to AUDA](docs/images/voice.png) |
+| **Wall mode.** Legible from across the room; the cursor hides when idle. | **Voice.** Hold Space, ask, hear the answer. |
+| ![While you were away recap](docs/images/recap.png) | |
+| **While you were away.** The story of your absence, in a few cards. | |
 
 <p align="center">
   <img src="docs/images/mobile-home.png" width="260" alt="Home on a phone, dark mode">

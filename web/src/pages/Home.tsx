@@ -47,7 +47,7 @@ export function Home() {
     <div className="home">
       <section className="presence">
         <motion.div className="presence-glyph" initial={{ scale: 0.92, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={fm.expressive}>
-          <Constellation tasks={tasks} state={glyphState} flash={flash} size={orbit} />
+          <Constellation tasks={tasks} state={glyphState} flash={flash} size={orbit} reactive />
         </motion.div>
         <div className="presence-text">
           <div className="presence-state"><PresenceGlyph presence={id.presence} size={16} /><span>{PRESENCE_LABEL[id.presence]}</span>{!s.connected && <span className="chip problem">reconnecting…</span>}</div>

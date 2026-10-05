@@ -18,6 +18,10 @@ export async function respond(a) {
   if (a.purpose === 'context handoff') return { text: 'Progress summary for handoff.' };
   if (a.purpose === 'draft custom agent') return { text: JSON.stringify({ name: 'Torque Expert', emoji: '🔩', description: 'Answers fastening questions from the maintenance manual.', instructions: 'Answer from the manual in your knowledge base. Quote exact values with units.', starters: ['What torque for the M8 bolts?'], criteria: 'The answer quotes the manual value.' }) };
   if (a.purpose === 'agent reflection') return { text: JSON.stringify({ lessons: [{ title: 'Quote units with torque values', lesson: 'When asked about torque, always quote the value with its unit (Nm) and the bolt size it applies to.' }], skill: { title: 'Answering spec questions', steps: '1. Search the knowledge base. 2. Quote the exact value. 3. Name the source.' } }) };
+  if (a.purpose === 'chat') {
+    const said = JSON.stringify(a.messages.at(-1)?.content ?? '');
+    if (/status|what.*(doing|happening)|how.*going/i.test(said)) return { text: 'Three agents are working: the database migration is about halfway, the launch plan is split into three parts, and supplier research is running. One thing needs you — clearing the scratch folder.' };
+  }
   if (a.purpose !== 'agent turn') return { text: 'ok' };
 
   const first = typeof a.messages[0].content === 'string' ? a.messages[0].content : '';

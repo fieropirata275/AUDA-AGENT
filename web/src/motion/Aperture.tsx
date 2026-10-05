@@ -6,6 +6,7 @@
  */
 import { useEffect, useId, useRef } from 'react';
 import { Spring, onTick, springs, prefersReducedMotion } from './spring';
+import { voiceSignal } from '../lib/voice';
 
 type P = { r: number; amp: number; inner: number; core: number; spin: number; breath: number; rate: number; orbit: number; pulse: number; notch: number; gaze: number; churn: number; resolve: number };
 const BASE: P = { r: 0.8, amp: 0.03, inner: 0.03, core: 0.3, spin: 0.12, breath: 0.018, rate: 0.35, orbit: 0, pulse: 0, notch: 0, gaze: 0, churn: 0.4, resolve: 0 };
@@ -44,7 +45,8 @@ function blob(cx: number, cy: number, R: number, f: (a: number) => number, rot: 
   return d + 'Z';
 }
 
-export function Aperture({ state = 'available', size = 200, flash }: { state?: string; size?: number; flash?: number }) {
+/** `reactive`: the glyph also moves with your voice while you talk to AUDA, and with its own when it answers. */
+export function Aperture({ state = 'available', size = 200, flash, reactive = false }: { state?: string; size?: number; flash?: number; reactive?: boolean }) {
   const uid = useId().replace(/:/g, '');
   const refs = useRef<Record<string, SVGElement | null>>({});
   const springsRef = useRef<Record<keyof P, Spring> | null>(null);
@@ -67,6 +69,7 @@ export function Aperture({ state = 'available', size = 200, flash }: { state?: s
   useEffect(() => {
     const S = springsRef.current!;
     let phase = Math.random() * 10, rot = 0, orbitA = 0, t = 0;
+    const voice = new Spring(0, springs.snap);
     const reduced = prefersReducedMotion();
     const hidden = () => document.hidden;
     return onTick((dt) => {
@@ -78,7 +81,9 @@ export function Aperture({ state = 'available', size = 200, flash }: { state?: s
       rot += dt * v.spin * speed;
       orbitA += dt * (0.9 + Math.abs(v.spin)) * Math.sign(v.spin || 1) * speed;
       flashRef.current = Math.max(0, flashRef.current - dt * 1.4);
-      const breathe = 1 + v.breath * Math.sin(t * TAU * v.rate);
+      voice.set(reactive && (voiceSignal.listening || voiceSignal.speaking) ? voiceSignal.level : 0);
+      const lv = Math.max(0, voice.step(dt));
+      const breathe = (1 + v.breath * Math.sin(t * TAU * v.rate)) * (1 + lv * 0.09);
       const live = 1 - v.resolve;
       const notchAt = -Math.PI / 4;
       const notch = (a: number) => {
@@ -87,10 +92,10 @@ export function Aperture({ state = 'available', size = 200, flash }: { state?: s
       };
       const c = 100;
       const R = 72 * v.r * breathe;
-      const outer = blob(c, c, R, (a) => (1 + live * (v.amp * Math.sin(3 * a + phase) + v.amp * 0.6 * Math.sin(5 * a - phase * 1.3))) * notch(a + rot), rot);
+      const outer = blob(c, c, R, (a) => (1 + live * (v.amp * Math.sin(3 * a + phase) + v.amp * 0.6 * Math.sin(5 * a - phase * 1.3)) + lv * 0.07 * Math.sin(9 * a + t * 14)) * notch(a + rot), rot);
       const mid = blob(c + v.gaze * 40 * Math.sin(t * 0.37) * live, c + v.gaze * 22 * Math.cos(t * 0.29) * live, R * 0.74,
         (a) => (1 + live * (v.inner * Math.sin(4 * a - phase * 1.7) + v.inner * 0.7 * Math.sin(7 * a + phase * 0.9))) * notch(a - rot * 1.4), -rot * 1.4);
-      const coreR = 72 * v.core * (1 + 0.04 * Math.sin(t * TAU * v.rate + 1)) * (1 + flashRef.current * 0.25);
+      const coreR = 72 * v.core * (1 + 0.04 * Math.sin(t * TAU * v.rate + 1)) * (1 + flashRef.current * 0.25) * (1 + lv * 0.35);
       const core = blob(c + v.gaze * 52 * Math.sin(t * 0.37) * live, c + v.gaze * 30 * Math.cos(t * 0.29) * live, coreR,
         (a) => 1 + live * (v.inner * 0.8 * Math.sin(3 * a + phase * 2.1)), rot * 2);
       refs.current.outer?.setAttribute('d', outer);
