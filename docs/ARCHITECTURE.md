@@ -7,7 +7,7 @@
 This document is the foundation the code is built on. It covers, in order:
 architecture, the application state model, the task and responsibility lifecycles,
 the database schema, the event model, the permission model, the design system,
-the motion system and AUDA's visual identity.
+the motion system, AUDA's visual identity, reliability, the team features and office work.
 
 ---
 
@@ -341,3 +341,41 @@ lets the whole agent path run deterministically without an API key.
   into lessons; hourly maintenance decays unhelpful lessons and re-reads
   sources whose content hash changed. Covered end to end by
   `scripts/e2e-org.mjs`.
+
+## 14. Office work — documents, decks, spreadsheets and research
+
+AUDA is a general computer operator, so deliverables are files, not chat text.
+`office/` gives every agent (any model) deterministic tools; the model supplies
+content, the toolkit supplies layout and correctness.
+
+* **Rendering** (`office/render.ts`). Markdown → HTML with `marked`; headings get
+  stable ids for the contents page, ```` ```chart ```` blocks become SVG
+  (`office/charts.ts`, no dependencies), workspace images are inlined as data
+  URIs. Fonts are embedded from `@fontsource`, so output is identical offline.
+  PDFs are printed by a dedicated headless Chromium with JavaScript disabled and
+  every non-`data:` request aborted — a document can't fetch or run anything.
+  Jobs are serialized and the browser closes when idle.
+* **Slides** (`office/slides.ts`). One validated `Deck` model renders to
+  PowerPoint (pptxgenjs: native charts, tables, notes), a self-contained HTML deck
+  (keyboard/swipe) and a PDF (one 1280×720 page per slide). Layout classes are
+  prefixed (`l-chart`) so they never collide with inner element classes.
+* **Documents** (`office/documents.ts`). Word via `docx` from the Markdown token
+  stream (charts rasterized to PNG); Excel via `exceljs` with typed column
+  formats, `=` strings as formulas, a SUM totals row over numeric and formula
+  columns, frozen header and autofilter. `readDocument` extracts text from PDF
+  (`pdftotext`/`pdfinfo`), pptx/docx (OOXML), xlsx (TSV, formulas shown with their
+  cached result) and anything the knowledge extractor understands.
+* **Research** (`office/search.ts`). SearXNG JSON or DuckDuckGo HTML; results are
+  wrapped as untrusted content, and the system prompt asks the agent to open
+  sources, cross-check and cite.
+* **Artifacts.** Every output is saved with `ctx.artifact` and linked to its task.
+  `/api/artifacts/:id/raw` serves HTML/SVG/XML/JS with
+  `Content-Security-Policy: sandbox allow-scripts …` (no `allow-same-origin`) and
+  `nosniff`, so generated pages run in an opaque origin without access to the
+  API; the UI iframe is sandboxed the same way. `/preview` returns spreadsheet
+  rows or extracted text plus *siblings* (same task, same base name — e.g. a
+  deck's pptx/pdf/html).
+
+Covered by `server/test/office.test.ts` and end to end by
+`scripts/e2e-office.mjs` (fake search engine → eight deliverables, each checked
+structurally, plus the sandbox headers).

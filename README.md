@@ -38,6 +38,7 @@ This repository is a working vertical slice, not a mockup:
 | **Plugins** | External apps as agent tools — GitHub, Google Calendar/Drive/Gmail, Slack, Notion, Linear, any remote MCP server, any OpenAPI service. Everyone connects their own account over OAuth (PKCE); writes ask first. |
 | **Custom agents** | One-click specialists from a sentence or a template, with a knowledge base (files, web pages it studies, notes), shareable with the organization. |
 | **Learning** | Each agent learns from its work: a learned re-ranker over its knowledge, lessons and skills written after every task, and 👍/👎 feedback — all local. |
+| **Real deliverables** | Agents do what you'd do at a computer, not just code: research the web and cite sources, then hand back a designed **PDF report** (cover, contents, charts), a **presentation** (PowerPoint with native charts and speaker notes, plus PDF and a full-screen web deck), a **Word** document, an **Excel** workbook with formulas and totals, or a chart. They read PDFs, decks, documents and spreadsheets too — and for code, they write it, run it and run the tests. Every file previews right in the UI. |
 
 The whole product works **offline without any model** — the built-in playbooks
 and intent compiler handle server health, page watching, CI, webhooks,
@@ -56,8 +57,10 @@ reports, reminders, rules and memory. Connect Claude to unlock open-ended work.
 
 | ![Wall mode on a 1080p display](docs/images/wall.png) | ![Talking to AUDA](docs/images/voice.png) |
 | **Wall mode.** Legible from across the room; the cursor hides when idle. | **Voice.** Hold Space, ask, hear the answer. |
-| ![While you were away recap](docs/images/recap.png) | |
-| **While you were away.** The story of your absence, in a few cards. | |
+| ![While you were away recap](docs/images/recap.png) | ![A generated slide deck previewed in AUDA](docs/images/office-deck.png) |
+| **While you were away.** The story of your absence, in a few cards. | **Decks.** One deck as PowerPoint, PDF and a web deck you can present from the browser. |
+| ![A generated Excel workbook previewed in AUDA](docs/images/office-sheet.png) | |
+| **Spreadsheets.** Real formulas and a totals row, previewed before you download. | |
 
 <p align="center">
   <img src="docs/images/mobile-home.png" width="260" alt="Home on a phone, dark mode">
@@ -113,6 +116,7 @@ npm run e2e:agent      # agent path with a scripted model: review/revise, sub-ag
 npm run e2e:reliability# platform drills: DB corruption restore, poison quarantine, frozen-core watchdog, crash loop → safe mode
 npm run e2e:lan        # LM Studio (faithful fake), discovery, pairing, uploads, team chat with @mentions
 npm run e2e:org        # accounts + invites, OAuth/PKCE + refresh, MCP discovery/registration/SSE, shared agents, knowledge, learning
+npm run e2e:office     # research → spreadsheet, chart, PDF report, deck (pptx/pdf/html), Word; reads its own PDF back
 npm run e2e            # all of them
 ```
 
@@ -146,6 +150,8 @@ Live state: **Settings → Reliability**.
 | `AUDA_AGENT_MAX_TURNS` | `80` | Hard cap on model turns per agent task |
 | `AUDA_PLUGIN_TIMEOUT_MS` | `30000` | Time budget for one plugin call |
 | `AUDA_STUDY_INTERVAL_MS` | `3600000` | How often agents re-read their sources and prune weak lessons |
+| `AUDA_SEARXNG_URL` | — | Use a self-hosted SearXNG for `search_web` (JSON API) |
+| `AUDA_SEARCH_URL` | DuckDuckGo HTML | Search endpoint used when SearXNG isn't set |
 
 ## Deploying
 
@@ -155,6 +161,30 @@ Live state: **Settings → Reliability**.
 
 All state lives in `AUDA_DATA`; back it up (or snapshot the VM) and AUDA resumes
 exactly where it was — responsibilities, memory and unfinished tasks included.
+
+## Documents, decks and research
+
+Ask for the outcome and you get the file. Agents have first-class tools for
+office work, so any model (Claude, or a local one in LM Studio) can deliver:
+
+| Tool | Produces |
+|---|---|
+| `search_web` | Web results (SearXNG or DuckDuckGo) — the agent then reads the pages and cites them |
+| `create_pdf` | A typeset report from Markdown: cover, contents, tables, ```` ```chart ```` blocks drawn as vector charts, workspace images, page numbers |
+| `create_presentation` | PowerPoint (`.pptx`, native editable charts, tables, speaker notes) + PDF + a self-contained web deck; layouts for title, section, bullets, two columns, chart, image, quote, table, stats, closing; themes `auda`, `midnight`, `paper` |
+| `create_document` | Word (`.docx`) with headings, lists, tables, charts and images |
+| `create_spreadsheet` | Excel (`.xlsx`): typed columns (currency, percent, date…), formulas, a totals row, frozen header, filters |
+| `create_chart` | SVG + PNG chart (bar, horizontal bar, line, area, pie, donut) |
+| `read_document` | Text from PDF, PowerPoint, Word, Excel and other files |
+
+Templates for a **Report Writer**, **Presentation Designer**, **Data Analyst**
+and **QA Engineer** are one click away under **Agents**. Results open in the
+artifact sheet: PDFs in a viewer, decks full screen, spreadsheets as tables, and
+each format of the same deliverable linked side by side. HTML and SVG outputs are
+served in a sandboxed origin, so a generated page can never act as you.
+
+PDF rendering uses AUDA's Chromium (offline, scripts off); reading PDFs uses
+`pdftotext` (poppler-utils, included in the Docker image).
 
 ## Teams, plugins and custom agents
 

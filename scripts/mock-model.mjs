@@ -71,6 +71,27 @@ export async function respond(a) {
     return { content: [text(val ? `The M8 flange bolts take ${val} according to the maintenance manual, tightened in a star pattern with calibrated torque wrench.` : 'I could not find it.')] };
   }
 
+  // A full office job: research → spreadsheet + chart → PDF report → deck → Word → read the PDF back.
+  if (title.startsWith('Quarterly pack')) {
+    const all = JSON.stringify(a.messages);
+    const saved = (ext) => (all.match(new RegExp(`(~/[^\\s"',)]+\\.${ext})`)) ?? [])[1];
+    const chart = { type: 'bar', title: 'Revenue by region', labels: ['EMEA', 'Americas', 'APAC'], series: [{ name: 'Revenue', values: [210, 340, 134] }], unit: '$' };
+    if (turn === 0) return { content: [tu('search_web', { query: 'quarterly revenue benchmarks SaaS' })] };
+    if (turn === 1) return { content: [
+      tu('create_spreadsheet', { name: 'revenue-model', title: 'Revenue model', sheets: [{ name: 'Regions', columns: [{ header: 'Region' }, { header: 'Revenue', format: 'currency' }, { header: 'Growth', format: 'percent' }, { header: 'Next year', format: 'currency' }], rows: [['EMEA', 210, 0.14, '=B2*(1+C2)'], ['Americas', 340, 0.21, '=B3*(1+C3)'], ['APAC', 134, 0.17, '=B4*(1+C4)']], totals: true }] }),
+      tu('create_chart', { name: 'revenue-by-region', chart }),
+    ] };
+    if (turn === 2) {
+      const src = /(https?:\/\/[^\s"\\]+)/.exec(all.slice(all.indexOf('web search')))?.[1] ?? 'https://example.com';
+      return { content: [tu('create_pdf', { name: 'quarterly-report', title: 'Quarterly Report', subtitle: 'Revenue, growth and outlook', toc: true, markdown: `## Executive summary\nRevenue reached **$684M**, up 18%.\n\n## By region\n\`\`\`chart\n${JSON.stringify(chart)}\n\`\`\`\n\n![Revenue by region](${saved('png') ?? 'missing.png'})\n\n## Outlook\n- APAC expansion\n- Margin focus\n\n## Sources\n- [Benchmark](${src})` })] };
+    }
+    if (turn === 3) return { content: [tu('create_presentation', { name: 'quarterly-review', deck: { title: 'Quarterly Review', subtitle: 'Revenue, growth and outlook', theme: 'midnight', slides: [{ layout: 'title' }, { layout: 'stats', title: 'The quarter', stats: [{ value: '$684M', label: 'Revenue' }, { value: '+18%', label: 'Growth' }] }, { layout: 'chart', title: 'Americas leads', chart, notes: 'Americas is half of revenue.' }, { layout: 'closing', title: 'Thank you' }] } })] };
+    if (turn === 4) return { content: [tu('create_document', { name: 'quarterly-report', title: 'Quarterly Report', markdown: '## Executive summary\nRevenue reached $684M.\n\n| Region | Revenue |\n|---|---:|\n| EMEA | 210 |\n| Americas | 340 |' })] };
+    if (turn === 5) return { content: [tu('read_document', { path: saved('pdf') ?? 'missing.pdf' })] };
+    const pages = /pdf · (\d+) pages/.exec(lastText)?.[1];
+    return { content: [text(`Quarterly pack delivered: spreadsheet, chart, PDF report (${pages ?? '?'} pages, read back OK), deck and Word document. Sources cited.`)] };
+  }
+
   // Long-running work, for watching the UI live.
   if (title.startsWith('Marathon') || title.startsWith('Part ')) {
     if (turn === 0) return { content: [tu('narrate', { text: `Working through ${title}.` }), tu('terminal', { cmd: 'sleep 45 && echo done', why: 'Long-running work', timeout_sec: 120 })] };

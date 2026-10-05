@@ -257,25 +257,67 @@ function RespSheet({ id }: { id: string }) {
   );
 }
 
+const OFFICE = /\.(pptx|docx|xlsx)$/i;
+const label = (name: string) => ({ pdf: 'PDF', pptx: 'PowerPoint', docx: 'Word', xlsx: 'Excel', html: 'Present', svg: 'SVG', png: 'Image' }[name.split('.').pop()!.toLowerCase()] ?? name.split('.').pop()!.toUpperCase());
+
+/** Spreadsheet preview: sheet tabs and a real table. */
+function SheetTable({ sheets }: { sheets: { name: string; rowCount: number; rows: any[][] }[] }) {
+  const [k, setK] = useState(0);
+  const sh = sheets[k];
+  if (!sh) return null;
+  return (
+    <div className="xlsx">
+      {sheets.length > 1 && <div className="xlsx-tabs">{sheets.map((x, i) => <button key={x.name} aria-pressed={i === k} onClick={() => setK(i)}>{x.name}</button>)}</div>}
+      <div className="xlsx-scroll"><table className="table small"><tbody>{sh.rows.map((r, i) => (
+        <tr key={i} className={i === 0 ? 'head' : ''}><td className="rn">{i + 1}</td>{Array.from(r, (c, j) => <td key={j} className={typeof c === 'number' ? 'num' : String(c ?? '').startsWith('=') ? 'fx' : ''}>{c == null ? '' : String(c)}</td>)}</tr>
+      ))}</tbody></table></div>
+      {sh.rowCount > sh.rows.length && <div className="small faint">Showing {sh.rows.length} of {sh.rowCount} rows — download for the rest.</div>}
+    </div>
+  );
+}
+
 function ArtifactSheet({ id }: { id: string }) {
   const s = useStore();
   const a = s.artifacts[id];
   const [text, setText] = useState<string | null>(null);
-  useEffect(() => { if (a && !a.mime.startsWith('image')) fetch(`/api/artifacts/${id}/raw`).then((r) => r.text()).then(setText); }, [id, a]);
+  const [preview, setPreview] = useState<any>(null);
+  const isText = a && /^text\/(plain|markdown|csv)|json|javascript|x-python/.test(a.mime);
+  useEffect(() => {
+    if (!a) return;
+    setText(null); setPreview(null);
+    if (isText) fetch(`/api/artifacts/${id}/raw`).then((r) => r.text()).then(setText);
+    else api(`/api/artifacts/${id}/preview`).then(setPreview).catch(() => setPreview({ kind: 'file', siblings: [] }));
+  }, [id, a?.id]);
   if (!a) return null;
+  const ext = a.name.split('.').pop()?.toLowerCase();
+  const raw = `/api/artifacts/${id}/raw`;
+  const siblings: { id: string; name: string }[] = preview?.siblings ?? [];
   return (
     <>
       <div className="sheet-head">
-        <span className="file-ico lg">{a.mime.startsWith('image') ? 'IMG' : a.name.split('.').pop()?.toUpperCase()}</span>
+        <span className={`file-ico lg ft-${ext}`}>{a.mime.startsWith('image') ? 'IMG' : ext?.toUpperCase()}</span>
         <div className="grow"><div className="faint small">{a.path}</div><h2 className="title" style={{ marginTop: 2 }}>{a.name}</h2></div>
-        <a className="btn ghost sm" href={`/api/artifacts/${id}/raw`} download={a.name}>Download</a>
+        <a className="btn ghost sm" href={`${raw}?download=1`} download={a.name}>Download</a>
         <button className="btn ghost icon" onClick={() => openSheet(null)} aria-label="Close"><Morph shape="close" size={18} /></button>
       </div>
       <div className="sheet-body">
         <div className="why"><span className="label">Why this file exists</span><div>{a.why}</div>
           {a.taskId && <button className="link small" onClick={() => openSheet({ type: 'task', id: a.taskId! })}>Made by “{a.taskTitle ?? 'a task'}” · {ago(a.createdAt)}</button>}</div>
-        {a.mime.startsWith('image') ? <img src={`/api/artifacts/${id}/raw`} alt={a.name} className="artifact-img" />
-          : a.mime === 'text/markdown' ? <Markdown text={text ?? ''} /> : <pre className="raw mono">{text}</pre>}
+        {siblings.length > 0 && (
+          <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+            <span className="small faint">Also as</span>
+            {siblings.map((x) => <button key={x.id} className="btn sm" onClick={() => openSheet({ type: 'artifact', id: x.id })}>{label(x.name)}</button>)}
+            {siblings.filter((x) => x.name.endsWith('.html')).map((x) => <a key={`p-${x.id}`} className="btn sm primary" href={`/api/artifacts/${x.id}/raw`} target="_blank" rel="noreferrer">Present full screen</a>)}
+          </div>
+        )}
+        {a.mime.startsWith('image') ? <img src={raw} alt={a.name} className="artifact-img" />
+          : ext === 'pdf' ? <iframe className="doc-frame" src={raw} title={a.name} />
+          : ext === 'html' ? <><iframe className="deck-frame" src={raw} title={a.name} sandbox="allow-scripts" /><a className="btn sm" href={raw} target="_blank" rel="noreferrer" style={{ marginTop: 8 }}>Open full screen</a></>
+          : preview?.kind === 'spreadsheet' ? <SheetTable sheets={preview.sheets} />
+          : OFFICE.test(a.name) && preview?.text ? <div className="doc-text">{preview.kind === 'presentation' ? preview.text.split(/\n?## /).filter(Boolean).map((sl: string, i: number) => <div key={i} className="slide-text"><b>{sl.split('\n')[0]}</b><span>{sl.split('\n').slice(1).join(' ')}</span></div>) : <pre className="raw">{preview.text}</pre>}</div>
+          : a.mime === 'text/markdown' ? <Markdown text={text ?? ''} />
+          : isText ? <pre className="raw mono">{text}</pre>
+          : preview ? <div className="faint small">No preview for this kind of file — download it to open.</div> : <div className="faint small">Loading…</div>}
       </div>
     </>
   );

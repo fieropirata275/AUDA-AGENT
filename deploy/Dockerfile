@@ -5,6 +5,7 @@ FROM node:22-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       chromium fonts-liberation ca-certificates bash coreutils findutils gzip procps curl git \
+      poppler-utils unzip zip python3 python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
