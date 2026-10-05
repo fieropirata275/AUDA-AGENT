@@ -13,18 +13,13 @@ import path from 'node:path';
 
 process.env.AUDA_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'auda-lms-test-'));
 
-const { rankModels, pickAgentModel, pickContext, suggest, paramsB, estimateGb, classifyLocalError, isLocalUrl } = await import('../src/connectors/lmstudio-setup.ts');
+const { rankModels, pickAgentModel, suggest, classifyLocalError, isLocalUrl } = await import('../src/connectors/lmstudio-setup.ts');
+const { profile, gpuBandwidth } = await import('../src/connectors/hardware.ts');
 const { listModels } = await import('../src/models/openai.ts');
 
-const hw = (o: Partial<any> = {}) => ({ platform: 'linux', arch: 'x64', cpu: 'x', cores: 8, totalGb: 32, freeGb: 20, gpus: [{ name: 'GPU', vramGb: 12 }], unified: false, fastGb: 11, maxGb: 27, summary: '', ...o });
-
-test('parameters and memory are read from LM Studio’s fields or the model name', () => {
-  assert.deepEqual(paramsB({ id: 'qwen/qwen3-30b-a3b' }), { total: 30, active: 3 });
-  assert.deepEqual(paramsB({ id: 'x', params: '7B' }), { total: 7, active: undefined });
-  assert.equal(paramsB({ id: 'llama-3.1-8b-instruct' }).total, 8, 'a version number is not a parameter count');
-  assert.equal(estimateGb({ id: 'a', type: 'llm', state: 'loaded', sizeBytes: 5e9 }), 5.5);
-  assert.equal(estimateGb({ id: 'mistral-7b', type: 'llm', state: 'x', quantization: 'Q8_0' }), 8.2);
-});
+const cpu = (o: object = {}) => ({ model: 'x', vendor: '', arch: 'x64', physicalCores: 8, threads: 16, avx2: true, avx512: false, amx: false, neon: false, ...o });
+const gpu = (vendor: any, name: string, vramGb: number) => ({ vendor, name, vramGb, backend: vendor === 'nvidia' ? 'cuda' : vendor === 'apple' ? 'metal' : 'rocm', bandwidthGBs: gpuBandwidth(vendor, name, vramGb) } as any);
+const machine = (gpus: any[], ramGb = 32, o: object = {}) => profile({ platform: 'linux', arch: 'x64', cpu: cpu(o), ram: { totalGb: ramGb, freeGb: ramGb / 2, bandwidthGBs: 60 }, gpus, unified: false });
 
 test('ranking prefers tool-calling models that fit, and never offers one that cannot run', () => {
   const ranked = rankModels([
@@ -33,30 +28,23 @@ test('ranking prefers tool-calling models that fit, and never offers one that ca
     { id: 'openai/gpt-oss-120b', type: 'llm', state: 'not-loaded', sizeBytes: 65e9, tools: true, contextLength: 131072 },
     { id: 'my-llama-3.1-8b-instruct', type: 'llm', state: 'not-loaded', sizeBytes: 4.9e9, contextLength: 131072 },
     { id: 'text-embedding-nomic', type: 'embeddings', state: 'not-loaded' },
-  ], hw());
+  ], machine([gpu('nvidia', 'NVIDIA GeForce RTX 3060', 12)], 16), 'balanced');
   assert.equal(ranked[0].id, 'qwen/qwen3-8b');
+  assert.ok(ranked[0].tps! > 20 && ranked[0].placement === 'gpu' && ranked[0].load?.flash_attention, 'the winner runs on the GPU with flash attention');
   assert.equal(ranked.find((r) => r.id === 'my-llama-3.1-8b-instruct')!.tools, 'likely', 'known families are likely to call tools');
   assert.equal(ranked.find((r) => r.id === 'openai/gpt-oss-120b')!.fits, 'no');
   assert.ok(!ranked.some((r) => r.id.includes('embedding')), 'embedding models are not chat models');
   assert.deepEqual(pickAgentModel(ranked).map((r) => r.id), ['qwen/qwen3-8b', 'my-llama-3.1-8b-instruct']);
-  // A model that is already loaded is running, whatever the estimate says.
-  const loadedBig = rankModels([{ id: 'big-70b', type: 'llm', state: 'loaded', sizeBytes: 40e9, tools: true }], hw());
-  assert.equal(loadedBig[0].fits, 'slow');
+  const loadedBig = rankModels([{ id: 'big-70b', type: 'llm', state: 'loaded', sizeBytes: 40e9, tools: true }], machine([gpu('nvidia', 'RTX 3060', 12)], 16));
+  assert.equal(loadedBig[0].fits, 'slow', 'a loaded model is running, whatever the estimate says');
 });
 
-test('context: room for an agent within the model’s limit and the memory left over', () => {
-  assert.equal(pickContext({ context: 40960, gb: 5 }, hw({ fastGb: 22 })), 32768);
-  assert.equal(pickContext({ context: 131072, gb: 5 }, hw({ fastGb: 40 })), 65536, 'lots of headroom → a bigger window');
-  assert.equal(pickContext({ context: 40960, gb: 9.5 }, hw({ fastGb: 11 })), 8192, 'tight memory → a small window');
-  assert.equal(pickContext({ context: 8192 }, null), 8192, 'never above the model’s limit');
-});
-
-test('suggestions are sized for the machine', () => {
-  assert.equal(suggest(hw({ gpus: [{ name: 'g', vramGb: 24 }], fastGb: 22 }))[0].key, 'google/gemma-4-26b-a4b');
-  assert.equal(suggest(hw({ gpus: [], unified: false, totalGb: 8, fastGb: 3.2, maxGb: 4.8 }))[0].key, 'qwen/qwen3-4b-2507');
-  assert.equal(suggest(hw({ gpus: [], unified: true, totalGb: 128, fastGb: 89.6, maxGb: 89.6 }))[0].key, 'openai/gpt-oss-120b');
-  const s = suggest(null);
-  assert.ok(s[0].recommended && s.length === 2);
+test('suggestions are planned for the machine, with speed, quantization, context and placement', () => {
+  const big = suggest(machine([gpu('nvidia', 'NVIDIA GeForce RTX 4090', 24)], 64), 'balanced');
+  assert.ok(big[0].recommended && big[0].placement === 'gpu' && big[0].tps! >= 20 && big[0].context! >= 32768, JSON.stringify(big[0]));
+  const tiny = suggest(machine([], 8, { physicalCores: 4, threads: 8 }), 'balanced');
+  assert.ok(tiny.length && tiny[0].gb < 4 && tiny[0].meets === false, 'an 8 GB CPU-only laptop gets a tiny model, flagged as slow');
+  assert.equal(suggest(null)[0].key, 'qwen/qwen3-8b', 'unknown hardware (a server elsewhere) → a safe middle choice');
 });
 
 test('failures are classified so the right fix is applied', () => {

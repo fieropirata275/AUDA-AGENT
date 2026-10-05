@@ -66,12 +66,23 @@ export interface Settings {
 }
 
 export interface LocalSetupStep { id: string; label: string; state: 'pending' | 'active' | 'done' | 'failed' | 'skipped'; detail?: string }
-export interface LocalSuggestion { key: string; name: string; gb: number; why: string; recommended?: boolean }
-export interface LocalRanked { id: string; score: number; tools: 'yes' | 'likely' | 'no'; fits: 'fast' | 'slow' | 'no' | 'unknown'; gb?: number; context?: number; loaded: boolean; reasons: string[] }
-export interface LocalHardware { summary: string; totalGb: number; fastGb: number; maxGb: number; gpus: { name: string; vramGb: number }[]; unified: boolean; platform: string }
+export interface LocalSuggestion {
+  key: string; name: string; gb: number; why: string; recommended?: boolean; label?: string;
+  variant?: string; format?: string; context?: number; tps?: number; turnSeconds?: number; placement?: 'gpu' | 'split' | 'cpu'; gpuShare?: number; reasons?: string[]; meets?: boolean; quality?: number;
+}
+export interface LocalRanked { id: string; score: number; tools: 'yes' | 'likely' | 'no'; fits: 'fast' | 'slow' | 'no' | 'unknown'; gb?: number; context?: number; loaded: boolean; reasons: string[]; tps?: number; placement?: string; variant?: string }
+export interface LocalGpu { vendor: string; name: string; vramGb: number; bandwidthGBs: number; backend: string; integrated?: boolean }
+export interface LocalHardware {
+  summary: string; platform: string; unified: boolean; backend: 'cuda' | 'metal' | 'rocm' | 'vulkan' | 'cpu'; tier: string;
+  fastGb: number; maxGb: number; bandwidth: { fast: number; ram: number }; notes: string[]; gpus: LocalGpu[];
+  cpu: { model: string; physicalCores: number; threads: number; performanceCores?: number; avx2: boolean; avx512: boolean; amx: boolean; neon: boolean };
+  ram: { totalGb: number; kind?: string; speedMTs?: number; bandwidthGBs: number };
+}
+export type LocalPreference = 'fast' | 'balanced' | 'smart';
 export interface LocalSetupState {
   running: boolean; auto: boolean; firstRun: boolean; startedAt: number; finishedAt?: number; baseUrl?: string; steps: LocalSetupStep[];
   download?: { model: string; pct: number; downloadedBytes: number; totalBytes: number; bytesPerSecond?: number; eta?: string };
   outcome?: 'connected' | 'text-only' | 'needs-model' | 'no-server' | 'failed'; message?: string; suggestions?: LocalSuggestion[]; ranked?: LocalRanked[]; hardware?: LocalHardware;
-  result?: { model: string; context?: number; tps?: number; tools: boolean; embeddings?: string };
+  preference?: LocalPreference; upgrade?: LocalSuggestion;
+  result?: { model: string; context?: number; tps?: number; predictedTps?: number; placement?: string; gpuShare?: number; variant?: string; tools: boolean; embeddings?: string };
 }

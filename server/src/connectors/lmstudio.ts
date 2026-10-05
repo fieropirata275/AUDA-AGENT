@@ -21,6 +21,7 @@ import { chat, listModels } from '../models/openai.ts';
 import { hasReasoningModel, modelSettings, type Role } from '../models/router.ts';
 import { putSecret, deleteSecret, resolveSecret } from '../secrets/broker.ts';
 import { notify } from '../notifications/service.ts';
+import { detectHardware } from './hardware.ts';
 import { isLocalUrl, liveState, lmsBinary, runSetup, setupState, startServer, type ConnectArgs } from './lmstudio-setup.ts';
 
 export function candidates(): string[] {
@@ -134,6 +135,15 @@ async function check() {
       const ctx = m?.loadedContext ? ` · ${Math.round(m.loadedContext / 1024)}k context` : '';
       const detail = `${local.model} · ${m ? (m.state === 'loaded' ? `loaded${ctx}` : m.state === 'not-loaded' ? (local.manage !== false && r.api === 'v1' ? 'not loaded — AUDA loads it when there’s work' : 'not loaded (LM Studio loads it on first use)') : 'available') : 'model missing on server!'} · ${local.tools ? 'tool calling ✓' : 'text only'}${local.tps ? ` · ~${local.tps} tok/s` : ''}`;
       setConnector('lmstudio', { state: m ? 'connected' : 'degraded', detail, error: m ? null : `${local.model} is no longer on the server`, last_ok_at: now() });
+      // New GPU, more RAM, a different machine: the plan for the old one may no longer be the best.
+      if (isLocalUrl(local.baseUrl)) {
+        const hw = await detectHardware();
+        const was = getSetting<string>('lmstudio.hwFingerprint', '');
+        if (was && was !== hw.fingerprint && getSetting('lmstudio.hwNotified', '') !== hw.fingerprint) {
+          setSetting('lmstudio.hwNotified', hw.fingerprint);
+          notify('attention', 'Your hardware changed', `AUDA now sees ${hw.summary}. Run setup again in Connections → LM Studio for a model planned for it.`);
+        }
+      }
       if (row?.state === 'error' || row?.state === 'degraded') activity('recover', 'LM Studio is reachable again', { detail });
     } else {
       const found = await detect();

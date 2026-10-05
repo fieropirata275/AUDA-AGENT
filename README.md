@@ -235,26 +235,53 @@ model connected, AUDA sets LM Studio up by itself:
   model for agents, loads it, checks it can use tools, measures its speed and
   connects. You get a notification that it's done.
 * **Installed but not running** → AUDA starts it (`lms server start`) first.
-* **No suitable model** → AUDA recommends one sized for this machine (it reads
-  your RAM, NVIDIA VRAM or Apple unified memory). One click downloads it, with
-  progress, and finishes the setup.
+* **No suitable model** → AUDA plans one for this machine (see below). One
+  click downloads it, with progress, and finishes the setup.
 * **Not installed** → Home shows the one-line install for your OS (or the app
   link). Once LM Studio is up, AUDA notices within a minute and takes over.
 
-| ![Home recommends a model sized for this machine](docs/images/local-setup-pick.png) | ![Setup running step by step, with the download's progress](docs/images/local-setup-progress.png) |
+### Planned for your hardware
+
+AUDA profiles the machine and plans the model the way an expert would:
+
+* **It detects:**
+  * GPUs: NVIDIA (`nvidia-smi`), AMD and Intel Arc (sysfs/lspci, or the
+    Windows registry), Apple silicon (chip, GPU cores, wired-memory limit). For
+    each one it records VRAM, backend (CUDA · ROCm · Vulkan · Metal) and memory
+    bandwidth.
+  * The CPU's physical cores and vector extensions (AVX2, AVX-512, AMX, NEON).
+  * RAM type, speed and bandwidth.
+* **It predicts, for every model, quantization and context:**
+  * where the model runs: all on the GPU, split between GPU and RAM, or on the
+    CPU;
+  * tokens per second: memory bandwidth ÷ bytes read per token, which is why
+    mixture-of-experts models read only their active experts;
+  * prompt speed, and how long a typical agent step takes.
+* **It picks the smartest configuration that meets your speed target**:
+  **Fastest** (≥40 tok/s), **Balanced** (≥20) or **Smartest** (≥8, still
+  usable).
+  * Quantization goes up (Q5/Q6/Q8, or 6-/8-bit MLX on a Mac) when there's
+    room, and down when there isn't.
+  * Context is 16k–64k, sized to the memory left over.
+  * If nothing reaches the target, AUDA says so honestly.
+* **It loads the model with matching settings:**
+  * flash attention;
+  * KV cache kept on the GPU, or moved to RAM to fit more layers;
+  * batch size sized to the GPU;
+  * the GPU share when the model is split.
+* **It learns.** Measured speed calibrates the next plan. If you add a GPU or
+  more RAM, AUDA notices and offers to plan again. When a clearly better model
+  fits, it offers it, but never downloads without a click.
+
+| ![Home recommends a model planned for this machine](docs/images/local-setup-pick.png) | ![Setup running step by step, with the download's progress](docs/images/local-setup-progress.png) |
 |---|---|
-| **Recommends** a model for this machine. | **Sets it up** step by step, download included. |
+| **Planned** for an RTX 4070 + Ryzen 7 7800X3D: predicted speed, quantization, context, GPU share. | **Sets it up** step by step, download included. |
 
 What makes it work well, not just work:
 
-* **Hardware-aware.** Models are ranked by tool calling (from LM Studio's
-  `trained_for_tool_use`, or known families), whether they fit in fast memory,
-  their context, and whether they're already loaded. A model too big for this
-  machine is never offered.
-* **Room to think.** Models are loaded through LM Studio's API with a context
-  length agents can work in (8k–64k, from the memory left over). If memory
-  is short, AUDA steps down to a smaller window. Without this, a just-in-time
-  load gets a small default window.
+* **Room to think.** Models load through LM Studio's API with an explicit
+  context length. If memory is short, AUDA steps down to a smaller window.
+  Without this, a just-in-time load gets a small default window.
 * **Probed, not assumed.** A real tool-calling test runs on the chosen model. If
   it fails, AUDA tries the next candidate. Models that only chat are used for
   text tasks, and AUDA says so.

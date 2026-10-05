@@ -53,14 +53,15 @@ export function startFakeLmStudio(port, opts = {}) {
       if (!m) return send(404, { error: `Model "${body.model}" not found` });
       const ctx = body.context_length ?? 4096;
       if (opts.maxLoadContext && ctx > opts.maxLoadContext && m.type === 'llm') return send(400, { error: `Failed to load model: insufficient system resources for a ${ctx}-token context` });
-      m.loaded = Math.min(ctx, m.max); loads.push({ model: m.key, context: m.loaded });
+      m.loaded = Math.min(ctx, m.max); loads.push({ model: m.key, context: m.loaded, flash_attention: body.flash_attention, offload_kv_cache_to_gpu: body.offload_kv_cache_to_gpu, eval_batch_size: body.eval_batch_size });
       return send(200, { type: m.type, instance_id: m.key, load_time_seconds: 0.4, status: 'loaded', ...(body.echo_load_config ? { load_config: { context_length: m.loaded } } : {}) });
     }
     if (url === '/api/v1/models/unload' && req.method === 'POST') { const m = find(body.instance_id); if (m) m.loaded = 0; return send(200, { instance_id: body.instance_id }); }
     if (url === '/api/v1/models/download' && req.method === 'POST') {
-      if (find(body.model)) return send(200, { status: 'already_downloaded' });
+      const [key, variant] = String(body.model).split('@');  // `key@q6_k` asks for a variant; the model is stored under its key
+      if (find(key)) return send(200, { status: 'already_downloaded' });
       const id = `job_${++jobs}`, total = 5e9;
-      downloads.set(id, { job_id: id, model: body.model, status: 'downloading', total_size_bytes: total, downloaded_bytes: 0, polls: 0, started_at: new Date().toISOString() });
+      downloads.set(id, { job_id: id, model: key, variant, status: 'downloading', total_size_bytes: total, downloaded_bytes: 0, polls: 0, started_at: new Date().toISOString() });
       return send(200, { job_id: id, status: 'downloading', total_size_bytes: total, started_at: new Date().toISOString() });
     }
     if (url.startsWith('/api/v1/models/download/status/')) {
@@ -71,10 +72,10 @@ export function startFakeLmStudio(port, opts = {}) {
       if (d.downloaded_bytes >= d.total_size_bytes && d.status !== 'completed') {
         d.status = 'completed'; d.completed_at = new Date().toISOString();
         const name = d.model.split('/').pop();
-        models.push({ key: d.model, type: 'llm', publisher: d.model.split('/')[0], params: (/(\d+b)/i.exec(name)?.[1] ?? '8B').toUpperCase(), size: 5e9, tools: true, max: 40960, loaded: 0 });
+        models.push({ key: d.model, type: 'llm', publisher: d.model.split('/')[0], params: (/(\d+b)/i.exec(name)?.[1] ?? '8B').toUpperCase(), quantization: d.variant?.toUpperCase(), size: 5e9, tools: true, max: 40960, loaded: 0 });
         persist();
       }
-      const { polls: _p, model: _m, ...pub } = d;
+      const { polls: _p, model: _m, variant: _v, ...pub } = d;
       return send(200, { ...pub, ...(d.status === 'downloading' ? { bytes_per_second: 1.7e9, estimated_completion: new Date(Date.now() + 2000).toISOString() } : {}) });
     }
     // ── v0 and OpenAI-compatible ──

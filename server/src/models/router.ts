@@ -21,6 +21,8 @@ export interface ModelSettings {
     baseUrl: string; model: string; kind?: 'lmstudio' | 'openai'; tools?: boolean; apiKeySecret?: string; contextLength?: number;
     /** AUDA may start the server, load the model and heal failures (set by one-click setup). */
     manage?: boolean; desiredContext?: number; api?: 'v1' | 'v0' | 'openai'; tps?: number; setupAt?: number;
+    /** The planner's load settings for this machine (flash attention, KV placement, batch, GPU share). */
+    loadSettings?: Record<string, unknown>; placement?: string;
   };
   dailyBudget?: number;      // in currency units (€/$), 0 = unlimited
   monthlyBudget?: number;

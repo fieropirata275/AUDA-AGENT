@@ -61,7 +61,11 @@ try {
   let b = await a.boot();
   must(b.notifications.some((n) => /needs one model/.test(n.title)), 'a notification should say one model is needed');
   must(b.activity.some((x) => /Started LM Studio’s server/.test(x.title)), 'starting the server is logged');
-  step(`first run: AUDA started LM Studio itself (lms server start --port ${LM}), found no tool-calling model, and recommends ${rec.name} (${rec.gb} GB) for “${first.hardware.summary}”`);
+  must(rec.tps > 0 && rec.variant && rec.context && rec.placement, `the plan has speed, quantization, context and placement: ${JSON.stringify(rec)}`);
+  const fastPlan = await a.api('/api/lmstudio/doctor?preference=fast');
+  const smartPlan = await a.api('/api/lmstudio/doctor?preference=smart');
+  must(fastPlan.suggestions[0].tps >= smartPlan.suggestions[0].tps, `Fastest plans a model at least as fast as Smartest: ${fastPlan.suggestions[0].name} ${fastPlan.suggestions[0].tps} vs ${smartPlan.suggestions[0].name} ${smartPlan.suggestions[0].tps}`);
+  step(`first run: AUDA started LM Studio itself (lms server start --port ${LM}), found no tool-calling model, and planned ${rec.name} ${rec.variant} · ${Math.round(rec.context / 1024)}k · ~${Math.round(rec.tps)} tok/s for “${first.hardware.summary}” (Fastest → ${fastPlan.suggestions[0].name}, Smartest → ${smartPlan.suggestions[0].name})`);
 
   const doctor = await a.api('/api/lmstudio/doctor');
   must(doctor.api === 'v1' && doctor.ranked.length === 1 && doctor.ranked[0].tools === 'no', `doctor: ${JSON.stringify(doctor.ranked)}`);
@@ -73,11 +77,14 @@ try {
   must(done.result.model === rec.key && done.result.tools && done.result.context === 16384 && done.result.tps > 0, `result: ${JSON.stringify(done.result)}`);
   must(done.result.embeddings === 'text-embedding-nomic-embed-text-v1.5', 'the embedding model is used for knowledge');
   const fs1 = await fakeApi(LM, '/__state');
-  must(fs1.loads.some((l) => l.model === rec.key && l.context === 16384), `loaded with fallback context: ${JSON.stringify(fs1.loads)}`);
+  const load = fs1.loads.find((l) => l.model === rec.key && l.context === 16384);
+  must(load, `loaded with fallback context: ${JSON.stringify(fs1.loads)}`);
+  must(load.flash_attention === true && load.offload_kv_cache_to_gpu === true && load.eval_batch_size >= 1024, `load settings planned for the GPU: ${JSON.stringify(load)}`);
+  must(done.result.predictedTps > 0 && done.result.placement === 'gpu', `prediction: ${JSON.stringify(done.result)}`);
   b = await a.boot();
   must(b.settings.models.roles.reasoning.provider === 'local' && b.settings.models.roles.reasoning.model === rec.key, 'reasoning runs on the local model');
   must(b.settings.models.local.manage && b.settings.models.local.desiredContext === 16384, 'managed, with its context remembered');
-  step(`one click: downloaded ${rec.key} (progress seen ${sawProgress}×), loaded it (32k didn’t fit → 16k), tool calling ✓, ~${done.result.tps} tok/s, every role connected, embeddings on`);
+  step(`one click: downloaded ${rec.key} (progress seen ${sawProgress}×), loaded it on the GPU with flash attention, KV cache on GPU, batch ${load.eval_batch_size} (32k didn’t fit → 16k), tool calling ✓, measured ~${done.result.tps} tok/s vs predicted ${Math.round(done.result.predictedTps)}, every role connected, embeddings on`);
 
   // ── B. healing ────────────────────────────────────────────────────────────
   const runTask = async (title) => {

@@ -294,6 +294,43 @@ lets the whole agent path run deterministically without an API key.
   32k → 16k → 8k when a load fails for memory. It runs automatically once on
   first run (nothing configured, no Claude key); `AUDA_LMSTUDIO_AUTO=0` turns
   that off, and a deliberate disconnect is never undone.
+* **Hardware profile** (`connectors/hardware.ts`):
+  * **Sources:** NVIDIA via `nvidia-smi` (VRAM, compute capability); AMD via
+    amdgpu sysfs (`mem_info_vram_total`, ROCm when `/dev/kfd` exists, else
+    Vulkan); Intel Arc via lspci and a table; Windows adapters via the
+    registry's `qwMemorySize`; Apple silicon via `sysctl` and
+    `system_profiler` (chip, GPU cores, `iogpu.wired_limit_mb`, else 2/3–3/4
+    of RAM).
+  * **CPU and RAM:** `/proc/cpuinfo` or `sysctl` for physical cores and
+    AVX2/AVX-512/AMX/NEON; `dmidecode` for RAM type, speed and modules.
+  * **Bandwidth:** tables of known parts, else estimated (laptop parts ×0.65).
+  * **Derived:** a fast budget (GPU or unified memory), a max budget (plus 80%
+    of RAM minus 2 GB), the backend, a tier, notes and a fingerprint.
+  * **Testing:** parsers are pure functions; `AUDA_FAKE_HW` substitutes a
+    whole profile in tests.
+* **Planner** (`connectors/model-planner.ts`):
+  * **Catalog:** tool-calling models with parameters, active parameters, KV
+    bytes per token, maximum context and an agentic-quality score.
+  * **Per (model × quantization × context):**
+    * memory = weights + KV cache + overhead → placement (`gpu` / `split` with
+      a GPU share — KV moved to RAM when that keeps ≥15% more layers on the
+      GPU / `cpu`); splits must leave 10% of the budget free;
+    * decode tok/s = calibration ÷ (active bytes on GPU ÷ GPU bandwidth +
+      active bytes in RAM ÷ RAM bandwidth + KV reads + fixed per-token cost),
+      with per-backend efficiency;
+    * prompt tok/s from bandwidth (GPU) or cores × vector width (CPU);
+    * agent-step time = 1.5k prompt tokens + 250 output tokens.
+  * **Selection:** the highest score (quality − quantization cost + context
+    bonus + a capped log-speed bonus) among configurations meeting the
+    preference's target, preferring ≥16k context. If none meets it, the
+    fastest usable one, flagged as below target.
+  * **Downloads:** catalog id plus `@variant`; if LM Studio doesn't offer
+    that variant, the plain id, so LM Studio picks the variant for the
+    hardware (MLX on Apple).
+  * **Loads:** `flash_attention`, `offload_kv_cache_to_gpu`,
+    `eval_batch_size` and `context_length` via REST; `--gpu <share>` via
+    `lms`.
+  * **Calibration:** measured tok/s ÷ predicted, smoothed per backend.
 * **Healing.** `withHealing` wraps every local call: connection refused →
   restart the server with `lms` (≤1/min) and reload the model; "not loaded"
   → load at the remembered context; context overflow → reload at double the

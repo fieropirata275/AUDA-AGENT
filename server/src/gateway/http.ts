@@ -31,7 +31,7 @@ import { checkNow } from '../watchers/runner.ts';
 import { authorize, resolveUser, requestPairing, pairingStatus, decidePairing, revokeClient } from './pairing.ts';
 import { card } from './discovery.ts';
 import { detect as lmDetect, connect as lmConnect, disconnect as lmDisconnect } from '../connectors/lmstudio.ts';
-import { EMBEDDING_SUGGESTION, downloadModel as downloadLmModel, hardware, isLocalUrl, lmsBinary, rankModels, runSetup as runLmSetup, setupState as lmSetupState, suggest } from '../connectors/lmstudio-setup.ts';
+import { EMBEDDING_SUGGESTION, calibration as lmCalibration, downloadModel as downloadLmModel, hardware, preference as lmPreference, isLocalUrl, lmsBinary, rankModels, runSetup as runLmSetup, setupState as lmSetupState, suggest } from '../connectors/lmstudio-setup.ts';
 import { listModels } from '../models/openai.ts';
 import { agents, handleGroupMessage, messageAgent, saveUpload, GROUP_ID } from '../agent/group.ts';
 import { system } from '../core/system.ts';
@@ -371,21 +371,28 @@ route('DELETE', '/api/lmstudio', () => { lmDisconnect(); activity('user', 'Disco
 route('GET', '/api/lmstudio/doctor', async (req) => {
   const found = await lmDetect();
   const baseUrl = String(req.query.get('baseUrl') ?? modelSettings().local?.baseUrl ?? (found.find((f) => f.flavor === 'lmstudio') ?? found[0])?.baseUrl ?? '');
-  const hw = !baseUrl || isLocalUrl(baseUrl) ? await hardware() : null;
+  const hw = !baseUrl || isLocalUrl(baseUrl) ? await hardware(req.query.get('refresh') === '1') : null;
+  const pref = (['fast', 'balanced', 'smart'].includes(String(req.query.get('preference'))) ? req.query.get('preference') : lmPreference()) as any;
   let models: any[] = [], api: string | null = null, error: string | null = null;
   if (baseUrl) {
     try { const r = await listModels(baseUrl, resolveSecret(modelSettings().local?.apiKeySecret)); models = r.models; api = r.api; }
     catch (e) { error = (e as Error).message; }
   }
-  return { baseUrl: baseUrl || null, api, error, hardware: hw, lms: lmsBinary(), local: baseUrl ? isLocalUrl(baseUrl) : true, found: found.map((f) => ({ baseUrl: f.baseUrl, flavor: f.flavor, models: f.models.length })), models, ranked: rankModels(models, hw), suggestions: suggest(hw), embedding: EMBEDDING_SUGGESTION, hasEmbeddings: models.some((m) => m.type === 'embeddings'), setup: lmSetupState(), platform: process.platform };
+  return { baseUrl: baseUrl || null, api, error, hardware: hw, lms: lmsBinary(), local: baseUrl ? isLocalUrl(baseUrl) : true, found: found.map((f) => ({ baseUrl: f.baseUrl, flavor: f.flavor, models: f.models.length })), models, ranked: rankModels(models, hw, pref), suggestions: suggest(hw, pref), preference: pref, calibration: lmCalibration(), embedding: EMBEDDING_SUGGESTION, hasEmbeddings: models.some((m) => m.type === 'embeddings'), setup: lmSetupState(), platform: process.platform };
 });
 /** One click: find/start the server, (download,) pick, load with a real context, probe, measure, connect. Progress arrives on the settings feed. */
 route('POST', '/api/lmstudio/setup', (req) => {
-  const { baseUrl, model, download, apiKey, roles } = req.body ?? {};
-  void runLmSetup({ baseUrl: baseUrl || undefined, model: model || undefined, download: download || undefined, apiKey: apiKey || undefined, roles: Array.isArray(roles) ? roles : undefined }).then((r) => {
+  const { baseUrl, model, download, apiKey, roles, preference } = req.body ?? {};
+  void runLmSetup({ baseUrl: baseUrl || undefined, model: model || undefined, download: download || undefined, apiKey: apiKey || undefined, roles: Array.isArray(roles) ? roles : undefined, preference: ['fast', 'balanced', 'smart'].includes(preference) ? preference : undefined }).then((r) => {
     if (r.outcome === 'connected' || r.outcome === 'text-only') activity('user', `Set up LM Studio: ${r.result!.model}`, { detail: r.message });
   });
   return { started: true };
+});
+route('POST', '/api/lmstudio/preference', (req) => {
+  const p = req.body?.preference;
+  if (!['fast', 'balanced', 'smart'].includes(p)) throw new HttpError(400, 'Choose fast, balanced or smart');
+  setSetting('lmstudio.preference', p); changed('settings', 'settings');
+  return { preference: p };
 });
 route('POST', '/api/lmstudio/download-embeddings', async () => {
   const l = modelSettings().local;

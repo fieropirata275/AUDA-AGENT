@@ -28,56 +28,16 @@ import { activity } from '../core/activity.ts';
 import { log } from '../core/log.ts';
 import { chat, listModels, type LocalModel } from '../models/openai.ts';
 import { hasReasoningModel, modelSettings } from '../models/router.ts';
+import { detectHardware, type Hardware } from './hardware.ts';
+import { CATALOG, bestOf, planDownloads, rankInstalled, type Calibration, type LoadSettings, type Option, type Preference, type Ranked } from './model-planner.ts';
 import { resolveSecret } from '../secrets/broker.ts';
 
-// ─── hardware ────────────────────────────────────────────────────────────────
+// ─── hardware & planning ─────────────────────────────────────────────────────
 
-export interface Hardware {
-  platform: string; arch: string; cpu: string; cores: number;
-  totalGb: number; freeGb: number;
-  gpus: { name: string; vramGb: number }[];
-  unified: boolean;
-  /** Memory a model can use and still run fast (GPU / unified memory). */
-  fastGb: number;
-  /** Memory a model can use at all (partly on the CPU — slower). */
-  maxGb: number;
-  summary: string;
-}
-
-const gb = (b: number) => Math.round((b / 1e9) * 10) / 10;
-const run = (bin: string, args: string[], timeout: number) => new Promise<{ code: number; out: string }>((resolve) => {
-  execFile(bin, args, { timeout, maxBuffer: 4 << 20, env: process.env }, (err, stdout, stderr) => {
-    resolve({ code: err ? (typeof (err as any).code === 'number' ? (err as any).code : 1) : 0, out: `${stdout ?? ''}${stderr ?? ''}` });
-  });
-});
-
-let hwCache: { at: number; hw: Hardware } | null = null;
-export async function hardware(): Promise<Hardware> {
-  if (hwCache && now() - hwCache.at < 10 * 60_000) return hwCache.hw;
-  const totalGb = gb(os.totalmem()), freeGb = gb(os.freemem());
-  const gpus: Hardware['gpus'] = [];
-  if (process.env.AUDA_FAKE_GPU) {
-    const [name, vram] = process.env.AUDA_FAKE_GPU.split(':');
-    gpus.push({ name, vramGb: Number(vram) });
-  } else {
-    const r = await run('nvidia-smi', ['--query-gpu=name,memory.total', '--format=csv,noheader,nounits'], 3000);
-    if (r.code === 0) for (const line of r.out.trim().split('\n')) {
-      const [name, mib] = line.split(',').map((s) => s.trim());
-      if (name && Number(mib)) gpus.push({ name, vramGb: Math.round((Number(mib) / 1024) * 10) / 10 });
-    }
-  }
-  const unified = process.platform === 'darwin' && process.arch === 'arm64';
-  const vram = gpus.reduce((s, g) => s + g.vramGb, 0);
-  const fastGb = unified ? totalGb * 0.7 : vram ? vram * 0.92 : Math.min(totalGb * 0.4, 12);
-  const maxGb = unified ? totalGb * 0.7 : vram ? vram + totalGb * 0.5 : totalGb * 0.6;
-  const cpu = os.cpus()[0]?.model?.replace(/\s+/g, ' ').trim() ?? os.arch();
-  const summary = unified ? `${totalGb} GB unified memory (Apple silicon)`
-    : vram ? `${gpus.map((g) => `${g.name} ${g.vramGb} GB`).join(' + ')} · ${totalGb} GB RAM`
-    : `${totalGb} GB RAM, no GPU found (models run on the CPU)`;
-  const hw = { platform: process.platform, arch: process.arch, cpu, cores: os.cpus().length, totalGb, freeGb, gpus, unified, fastGb: Math.round(fastGb * 10) / 10, maxGb: Math.round(maxGb * 10) / 10, summary };
-  hwCache = { at: now(), hw };
-  return hw;
-}
+export type { Hardware } from './hardware.ts';
+export const hardware = (force = false) => detectHardware(force);
+export const preference = (): Preference => getSetting<Preference>('lmstudio.preference', 'balanced');
+export const calibration = (): Calibration => getSetting<Calibration>('lmstudio.calibration', {});
 
 /** Is the server on this machine (so its hardware is ours and `lms` can manage it)? */
 export function isLocalUrl(baseUrl: string) {
@@ -103,108 +63,48 @@ export function lmsBinary(): string | null {
   return null;
 }
 
+const run = (bin: string, args: string[], timeout: number) => new Promise<{ code: number; out: string }>((resolve) => {
+  execFile(bin, args, { timeout, maxBuffer: 4 << 20, env: process.env }, (err, stdout, stderr) => {
+    resolve({ code: err ? (typeof (err as any).code === 'number' ? (err as any).code : 1) : 0, out: `${stdout ?? ''}${stderr ?? ''}` });
+  });
+});
+
 const lms = (args: string[], timeout = 90_000) => {
   const bin = lmsBinary();
   if (!bin) throw new Error('LM Studio’s command-line tool (lms) isn’t on this machine');
   return run(bin, args, timeout);
 };
 
-// ─── ranking ─────────────────────────────────────────────────────────────────
+// ─── ranking & suggestions ───────────────────────────────────────────────────
 
-/** Families that reliably call tools when LM Studio doesn't say. */
-const TOOL_FAMILIES = /qwen3|qwen2\.5|gpt-oss|llama-?3\.[1-3]|llama-?4|mistral-(small|nemo|large|medium)|devstral|magistral|ministral|gemma-?[34]|granite-?[34]|glm-?4|hermes|command-r|phi-?4|deepseek-(v3|r1)|kimi|nemotron|functionary|xlam/i;
-
-export function paramsB(m: Pick<LocalModel, 'id' | 'params'>): { total?: number; active?: number } {
-  const src = `${m.params ?? ''} ${m.id}`.toLowerCase();
-  const total = /(?:^|[^a-z0-9.])(\d+(?:\.\d+)?)b(?![a-z])/.exec(src)?.[1];
-  const active = /a(\d+(?:\.\d+)?)b(?![a-z])/.exec(src)?.[1];
-  return { total: total ? Number(total) : undefined, active: active ? Number(active) : undefined };
-}
-
-/** Memory a model needs in GB — its file size when LM Studio says, else estimated from parameters and quantization. */
-export function estimateGb(m: LocalModel): number | undefined {
-  if (m.sizeBytes) return gb(m.sizeBytes * 1.1);
-  const { total } = paramsB(m);
-  if (!total) return undefined;
-  const q = (m.quantization ?? '').toUpperCase();
-  const bits = /F16|BF16/.test(q) ? 16 : /Q8|8BIT/.test(q) ? 8.5 : /Q6/.test(q) ? 6.6 : /Q5/.test(q) ? 5.5 : /Q3/.test(q) ? 3.5 : /Q2/.test(q) ? 2.7 : 4.8;
-  return Math.round(total * bits / 8 * 1.1 * 10) / 10;
-}
-
-export interface Ranked {
-  id: string; score: number; tools: 'yes' | 'likely' | 'no'; fits: 'fast' | 'slow' | 'no' | 'unknown';
-  gb?: number; context?: number; loaded: boolean; reasons: string[]; vision?: boolean;
-}
-
-export function rankModels(models: LocalModel[], hw: Hardware | null): Ranked[] {
-  const out: Ranked[] = [];
-  for (const m of models) {
-    if (m.type === 'embeddings' || /embed/i.test(m.id)) continue;
-    const reasons: string[] = [];
-    let score = 0;
-    // LM Studio's flag when it gives one; else the family. The tool-calling probe has the final word.
-    const tools: Ranked['tools'] = m.tools === true ? 'yes' : TOOL_FAMILIES.test(m.id) ? 'likely' : 'no';
-    if (tools === 'yes') { score += 40; reasons.push('trained for tool use'); }
-    else if (tools === 'likely') { score += 30; reasons.push('a family that calls tools'); }
-    else reasons.push('not known to call tools — text tasks only');
-    const need = estimateGb(m);
-    const { total, active } = paramsB(m);
-    let fits: Ranked['fits'] = 'unknown';
-    if (hw && need) {
-      if (need <= hw.fastGb) { fits = 'fast'; reasons.push(`fits in ${hw.unified ? 'memory' : hw.gpus.length ? 'GPU memory' : 'memory'} (${need} GB)`); }
-      else if (need <= hw.maxGb) { fits = 'slow'; score -= 15; reasons.push(`${need} GB — partly on the CPU, slower`); }
-      else if (m.state === 'loaded') { fits = 'slow'; score -= 10; reasons.push(`${need} GB — larger than expected, but it’s loaded and running`); }
-      else { fits = 'no'; score -= 100; reasons.push(`needs about ${need} GB — more than this machine has`); }
-    }
-    if (total) score += Math.min(total, 40) * (fits === 'slow' ? 0.4 : 1.1);
-    if (active && total && active < total) { score += 4; reasons.push(`mixture of experts (${active}B active) — quick`); }
-    const ctx = m.contextLength;
-    if (ctx) {
-      if (ctx >= 32_768) score += 8;
-      else if (ctx < 8192) { score -= 40; reasons.push(`only ${Math.round(ctx / 1024)}k context`); }
-      else if (ctx < 16_384) score -= 15;
-    }
-    if (m.state === 'loaded') { score += 6; reasons.push('already loaded'); }
-    if (/coder|devstral/i.test(m.id)) score += 2;
-    out.push({ id: m.id, score: Math.round(score * 10) / 10, tools, fits, gb: need, context: ctx, loaded: m.state === 'loaded', reasons, vision: m.vision });
-  }
-  return out.sort((a, b) => b.score - a.score);
-}
+export type { Ranked } from './model-planner.ts';
+export const rankModels = (models: LocalModel[], hw: Hardware | null, pref = preference()) => rankInstalled(models, hw, pref, calibration());
 
 /** The model to use for agents: the best runnable tool-capable one. */
 export const pickAgentModel = (ranked: Ranked[]) => ranked.filter((r) => r.tools !== 'no' && r.fits !== 'no');
 
-/** Context to load with: room for an agent's working set, within the model's limit and the memory left over. */
-export function pickContext(model: Pick<Ranked, 'context' | 'gb'>, hw: Hardware | null): number {
-  const max = model.context ?? 32_768;
-  let want = 32_768;
-  if (hw && model.gb) {
-    const headroom = hw.fastGb - model.gb;
-    if (headroom < 2) want = 8192;
-    else if (headroom < 4) want = 16_384;
-    else if (headroom > 16 && max >= 65_536) want = 65_536;
-  }
-  return Math.max(4096, Math.min(want, max));
-}
+/** Context when the hardware is unknown (a server elsewhere): 32k within the model's limit. */
+export const fallbackContext = (max?: number) => Math.max(4096, Math.min(32_768, max ?? 32_768));
 
-export interface Suggestion { key: string; name: string; gb: number; why: string; recommended?: boolean }
-const CATALOG: (Suggestion & { minGb: number })[] = [
-  { key: 'qwen/qwen3-4b-2507', name: 'Qwen3 4B', gb: 2.5, minGb: 5, why: 'Small and quick, and calls tools reliably for its size.' },
-  { key: 'qwen/qwen3-8b', name: 'Qwen3 8B', gb: 5, minGb: 9, why: 'A good all-rounder for agents on a laptop or a mid-range GPU.' },
-  { key: 'openai/gpt-oss-20b', name: 'gpt-oss 20B', gb: 12.1, minGb: 15, why: 'Strong reasoning and tool use, and fast (mixture of experts).' },
-  { key: 'google/gemma-4-26b-a4b', name: 'Gemma 4 26B A4B', gb: 17, minGb: 22, why: 'Capable and fast (4B active), with vision.' },
-  { key: 'openai/gpt-oss-120b', name: 'gpt-oss 120B', gb: 65, minGb: 75, why: 'The strongest open model for agents, for big-memory machines.' },
-];
+export interface Suggestion {
+  key: string; name: string; gb: number; why: string; recommended?: boolean; label?: string;
+  variant?: string; format?: string; context?: number; tps?: number; turnSeconds?: number; placement?: string; gpuShare?: number; reasons?: string[]; meets?: boolean; quality?: number;
+}
+const toSuggestion = (o: Option, extra: Partial<Suggestion> = {}): Suggestion => ({
+  key: o.key, name: o.name, gb: o.downloadGb, why: o.why, variant: o.variant, format: o.format, context: o.context, tps: o.tps, turnSeconds: o.turnSeconds,
+  placement: o.placement, gpuShare: o.gpuShare, reasons: o.reasons, meets: o.meets, quality: o.quality, ...extra,
+});
 export const EMBEDDING_SUGGESTION: Suggestion = { key: 'nomic-ai/nomic-embed-text-v1.5', name: 'Nomic Embed v1.5', gb: 0.08, why: 'Better knowledge search for agents; tiny.' };
 
-/** Downloads sized for this machine: the largest that runs fast, plus a lighter alternative. */
-export function suggest(hw: Hardware | null): Suggestion[] {
-  const budget = hw ? (hw.gpus.length || hw.unified ? hw.fastGb : Math.min(hw.maxGb, 12)) : 9;
-  const fit = CATALOG.filter((c) => c.minGb <= Math.max(budget, 5));
-  const best = fit[fit.length - 1] ?? CATALOG[0];
-  const lighter = fit.length > 1 ? fit[fit.length - 2] : undefined;
-  return [{ ...best, recommended: true }, ...(lighter ? [lighter] : [])].map(({ minGb: _m, ...s }: any) => s);
+/** Downloads planned for this machine and preference: the best, then a faster / smarter / other choice. */
+export function suggest(hw: Hardware | null, pref = preference()): Suggestion[] {
+  if (!hw) return [toSuggestion(bestOf(CATALOG.find((c) => c.key === 'qwen/qwen3-8b')!, GENERIC, pref)!, { recommended: true })];
+  const plan = planDownloads(hw, pref, calibration());
+  if (!plan.best) return [];
+  return [toSuggestion(plan.best, { recommended: true }), ...plan.alternatives.map((o) => toSuggestion(o, { label: o === plan.faster ? 'Faster' : o === plan.smarter ? 'Smarter' : undefined }))];
 }
+/** A mid-range machine, for planning when the server's hardware is unknown. */
+const GENERIC = { platform: 'linux', arch: 'x64', cpu: { model: '', vendor: '', arch: 'x64', physicalCores: 8, threads: 16, avx2: true, avx512: false, amx: false, neon: false }, ram: { totalGb: 32, freeGb: 16, bandwidthGBs: 60 }, gpus: [], unified: false, backend: 'cuda', fastGb: 11, maxGb: 30, bandwidth: { fast: 360, ram: 60 }, tier: 'mid', summary: '', notes: [], fingerprint: '' } as Hardware;
 
 // ─── server control ──────────────────────────────────────────────────────────
 
@@ -235,19 +135,24 @@ const v1 = async (baseUrl: string, p: string, body?: unknown, timeout = 30_000, 
 };
 
 /** Load a model with a context length; tries smaller windows if memory is short. Returns the context it got. */
-export async function loadModel(baseUrl: string, model: string, context: number, apiKey = keyOf()): Promise<{ context: number; seconds?: number; via: 'api' | 'lms' }> {
+/**
+ * Load a model with a context length and the planner's settings (flash attention, KV cache placement,
+ * batch size; GPU share through the CLI). Tries smaller windows if memory is short. Returns the context it got.
+ */
+export async function loadModel(baseUrl: string, model: string, context: number, apiKey = keyOf(), settings: Partial<LoadSettings> = {}): Promise<{ context: number; seconds?: number; via: 'api' | 'lms' }> {
   const ladder = [...new Set([context, 16_384, 8192].filter((c) => c <= context))];
+  const { gpu, context_length: _c, ...apiSettings } = settings;
   let lastErr: unknown;
   for (const ctx of ladder) {
     try {
-      const r = await v1(baseUrl, '/api/v1/models/load', { model, context_length: ctx, echo_load_config: true }, 15 * 60_000, apiKey);
+      const r = await v1(baseUrl, '/api/v1/models/load', { model, ...apiSettings, context_length: ctx, echo_load_config: true }, 15 * 60_000, apiKey);
       return { context: r.load_config?.context_length ?? ctx, seconds: r.load_time_seconds, via: 'api' };
     } catch (e) {
       lastErr = e;
       if ((e as any).status === 404 && !/model/i.test((e as Error).message)) {
         // LM Studio before 0.4 has no load endpoint; the CLI can do it when the server is on this machine.
         if (!isLocalUrl(baseUrl) || !lmsBinary()) throw new Error('This LM Studio can’t be told to load models remotely — update it to 0.4 or newer, or load the model in LM Studio.');
-        const r = await lms(['load', model, '--context-length', String(ctx)], 15 * 60_000);
+        const r = await lms(['load', model, '--context-length', String(ctx), ...(gpu !== undefined ? ['--gpu', gpu >= 0.98 ? 'max' : gpu <= 0 ? 'off' : String(gpu)] : [])], 15 * 60_000);
         if (r.code === 0) return { context: ctx, via: 'lms' };
         lastErr = new Error(r.out.trim().split('\n').slice(-2).join(' ') || 'lms load failed');
       }
@@ -282,6 +187,17 @@ export async function downloadModel(baseUrl: string, model: string, onProgress: 
   }
 }
 
+/** Download the planned variant (e.g. `qwen/qwen3-14b@q6_k`); if LM Studio doesn't offer it, the catalog's default for this machine. */
+export async function downloadPlanned(baseUrl: string, key: string, variant: string | undefined, onProgress: (p: DownloadProgress) => void, apiKey = keyOf()): Promise<string> {
+  const isDefault = !variant || /^(Q4_K_M|4bit|MXFP4)$/i.test(variant);
+  if (!isDefault) {
+    try { await downloadModel(baseUrl, `${key}@${variant!.toLowerCase()}`, onProgress, apiKey); return variant!; }
+    catch (e) { if (/update it to 0\.4/.test((e as Error).message)) throw e; log.info(`${key}@${variant} isn’t offered; downloading the default variant`); }
+  }
+  await downloadModel(baseUrl, key, onProgress, apiKey);
+  return 'default';
+}
+
 /** Rough generation speed: tokens per second on a short answer. */
 export async function measureSpeed(baseUrl: string, model: string, apiKey = keyOf()) {
   const t0 = now();
@@ -300,8 +216,10 @@ export interface SetupState {
   firstRun: boolean; finishedAt?: number; baseUrl?: string;
   steps: Step[]; download?: DownloadProgress;
   outcome?: 'connected' | 'text-only' | 'needs-model' | 'no-server' | 'failed';
-  message?: string; suggestions?: Suggestion[]; ranked?: Ranked[]; hardware?: Hardware;
-  result?: { model: string; context?: number; tps?: number; tools: boolean; embeddings?: string };
+  message?: string; suggestions?: Suggestion[]; ranked?: Ranked[]; hardware?: Hardware; preference?: Preference;
+  /** A download that would be clearly better than the model in use. */
+  upgrade?: Suggestion;
+  result?: { model: string; context?: number; tps?: number; predictedTps?: number; placement?: string; gpuShare?: number; variant?: string; tools: boolean; embeddings?: string };
 }
 
 const LABELS: Record<StepId, string> = { find: 'Find LM Studio', server: 'Server running', model: 'Choose a model', load: 'Load it with room to think', tools: 'Check it can use tools', speed: 'Measure its speed', connect: 'Connect AUDA' };
@@ -319,7 +237,7 @@ const step = (id: StepId, s: Step['state'], detail?: string) => {
   push(s !== 'active');
 };
 
-export interface SetupOptions { baseUrl?: string; model?: string; download?: string; apiKey?: string; auto?: boolean; roles?: string[] }
+export interface SetupOptions { baseUrl?: string; model?: string; download?: string; apiKey?: string; auto?: boolean; roles?: string[]; preference?: Preference }
 
 let running: Promise<SetupState> | null = null;
 /** Run setup (single-flight). Resolves with the final state; progress is pushed as it goes. */
@@ -343,6 +261,8 @@ async function setup(o: SetupOptions): Promise<SetupState> {
   const s = state!;
   const { probeTools, connect: connectFn, detect: detectFn } = await import('./lmstudio.ts');
   const apiKey = o.apiKey ?? keyOf();
+  if (o.preference) setSetting('lmstudio.preference', o.preference);
+  const pref = s.preference = preference();
   // 1. Find a server — start one with `lms` if it's installed here.
   step('find', 'active');
   let baseUrl = o.baseUrl?.replace(/\/+$/, '') ?? modelSettings().local?.baseUrl;
@@ -353,7 +273,7 @@ async function setup(o: SetupOptions): Promise<SetupState> {
   if (!baseUrl) {
     if (!lmsBinary()) {
       step('find', 'failed', 'LM Studio isn’t running on this machine or your network.');
-      s.outcome = 'no-server'; s.hardware = await hardware(); s.suggestions = suggest(s.hardware);
+      s.outcome = 'no-server'; s.hardware = await hardware(); s.suggestions = suggest(s.hardware, pref);
       s.message = 'Install LM Studio (or its headless server, llmster) and AUDA takes it from there.';
       return s;
     }
@@ -379,13 +299,15 @@ async function setup(o: SetupOptions): Promise<SetupState> {
   const hw = isLocalUrl(baseUrl) ? await hardware() : null;
   s.hardware = hw ?? undefined;
   if (o.download) {
-    step('model', 'active', `Downloading ${o.download}…`);
-    await downloadModel(baseUrl, o.download, (p) => { s.download = p; push(); }, apiKey);
+    const spec = CATALOG.find((c) => c.key === o.download);
+    const planned = spec && hw ? bestOf(spec, hw, pref, calibration()) : null;
+    step('model', 'active', `Downloading ${spec?.name ?? o.download}${planned ? ` (${planned.variant})` : ''}…`);
+    const got = await downloadPlanned(baseUrl, o.download, planned?.variant, (p) => { s.download = p; push(); }, apiKey);
     s.download = { ...(s.download ?? { model: o.download, downloadedBytes: 0, totalBytes: 0 }), pct: 100 };
-    activity('user', `Downloaded ${o.download} into LM Studio`);
+    activity('user', `Downloaded ${spec?.name ?? o.download} into LM Studio`, { detail: got === 'default' ? 'LM Studio chose the variant for this machine.' : `${got}, chosen for this machine.` });
     list = await listModels(baseUrl, apiKey);
   }
-  const ranked = rankModels(list.models, hw);
+  const ranked = rankModels(list.models, hw, pref);
   s.ranked = ranked.slice(0, 12);
   const want = o.model ?? (o.download ? list.models.find((m) => m.id === o.download || m.id.endsWith(`/${o.download!.split('/').pop()}`))?.id : undefined);
   const candidates = want ? ranked.filter((r) => r.id === want) : pickAgentModel(ranked);
@@ -393,8 +315,9 @@ async function setup(o: SetupOptions): Promise<SetupState> {
   if (!candidates.length) {
     const textOnly = ranked.filter((r) => r.fits !== 'no');
     step('model', 'failed', textOnly.length ? `${textOnly.length === 1 ? textOnly[0].id + ' doesn’t' : 'None of the ' + textOnly.length + ' models'} call tools, which agents need.` : 'There’s no model on the server yet.');
-    s.outcome = 'needs-model'; s.suggestions = suggest(hw);
-    s.message = `One download and AUDA can work on its own: ${s.suggestions[0].name} (${s.suggestions[0].gb} GB) suits ${hw ? 'this machine' : 'most machines'}.`;
+    s.outcome = 'needs-model'; s.suggestions = suggest(hw, pref);
+    const top = s.suggestions[0];
+    s.message = top ? `One download and AUDA can work on its own: ${top.name} (${top.gb} GB)${top.tps ? `, about ${Math.round(top.tps)} tokens a second here` : ''}.` : 'This machine is too small for a model that can run agents — connect Claude, or LM Studio on a bigger computer on your network.';
     return s;
   }
   step('model', 'done', `${candidates[0].id} — ${candidates[0].reasons.slice(0, 2).join(', ')}`);
@@ -404,15 +327,17 @@ async function setup(o: SetupOptions): Promise<SetupState> {
   for (const c of candidates.slice(0, 3)) {
     step('load', 'active', `${c.id}…`);
     const entry = list.models.find((m) => m.id === c.id)!;
-    const ctx = pickContext(c, hw);
+    const settings: Partial<LoadSettings> = c.load ?? { context_length: fallbackContext(c.context) };
+    const ctx = settings.context_length ?? fallbackContext(c.context);
     if (list.api === 'v1' || (isLocalUrl(baseUrl) && lmsBinary())) {
       if (entry.state === 'loaded' && (entry.loadedContext ?? 0) >= Math.min(ctx, 16_384)) {
         context = entry.loadedContext; step('load', 'done', `${c.id} is loaded with ${Math.round((context ?? 0) / 1024)}k context`);
       } else {
         if (entry.state === 'loaded' && entry.instances?.length) for (const i of entry.instances) await unloadModel(baseUrl, i);
-        const r = await loadModel(baseUrl, c.id, ctx, apiKey);
+        const r = await loadModel(baseUrl, c.id, ctx, apiKey, settings);
         context = r.context;
-        step('load', 'done', `${c.id} · ${Math.round(r.context / 1024)}k context${r.seconds ? ` · loaded in ${r.seconds.toFixed(1)} s` : ''}`);
+        const where = c.placement === 'gpu' ? (hw?.backend === 'metal' ? 'in unified memory' : 'on the GPU') : c.placement === 'split' ? `${Math.round((c.gpuShare ?? 0) * 100)}% on the GPU` : c.placement === 'cpu' ? 'on the CPU' : '';
+        step('load', 'done', `${c.id} · ${Math.round(r.context / 1024)}k context${where ? ` · ${where}` : ''}${settings.flash_attention ? ' · flash attention' : ''}${r.seconds ? ` · ${r.seconds.toFixed(1)} s` : ''}`);
       }
     } else { context = entry.contextLength; step('load', 'skipped', 'This server loads models on first use'); }
     step('tools', 'active', c.id);
@@ -427,7 +352,13 @@ async function setup(o: SetupOptions): Promise<SetupState> {
 
   step('speed', 'active');
   const speed = await measureSpeed(baseUrl, chosen.id, apiKey).catch(() => null);
-  step('speed', speed ? 'done' : 'skipped', speed ? `about ${speed.tps} tokens a second` : 'couldn’t measure');
+  step('speed', speed ? 'done' : 'skipped', speed ? `about ${speed.tps} tokens a second${chosen.tps ? ` (predicted ${Math.round(chosen.tps)})` : ''}` : 'couldn’t measure');
+  // Learn how this machine really performs, so the next plan is closer.
+  if (speed && hw && chosen.tps && speed.tps > 0) {
+    const cal = calibration(), old = cal[hw.backend] ?? 1;
+    const measured = speed.tps / (chosen.tps / old);
+    setSetting('lmstudio.calibration', { ...cal, [hw.backend]: Math.round(Math.max(0.3, Math.min(3, old * 0.5 + measured * 0.5)) * 100) / 100 });
+  }
 
   // 6. Connect: every role on the chosen model; embeddings if an embedding model is there.
   step('connect', 'active');
@@ -435,15 +366,22 @@ async function setup(o: SetupOptions): Promise<SetupState> {
   await connectFn({
     baseUrl, model: chosen.id, apiKey: o.apiKey, contextLength: context,
     roles: (o.roles?.length ? o.roles : textOnly ? ['utility'] : ['reasoning', 'utility', 'coding', 'vision']),
-    probe, extra: { manage: true, desiredContext: context, api: list.api, tps: speed?.tps, setupAt: now() },
+    probe, extra: { manage: true, desiredContext: context, api: list.api, tps: speed?.tps, setupAt: now(), loadSettings: chosen.load ? { ...chosen.load, context_length: undefined } : undefined, placement: chosen.placement },
   });
   if (embed && !getSetting('kb.embedModel', '')) setSetting('kb.embedModel', embed);
+  if (hw) setSetting('lmstudio.hwFingerprint', hw.fingerprint);
+  // A download that would be clearly better here (smarter at the same speed target) — offered, never forced.
+  if (hw && !textOnly) {
+    const plan = planDownloads(hw, pref, calibration());
+    const installed = new Set(list.models.map((m) => m.id));
+    if (plan.best && !installed.has(plan.best.key) && plan.best.meets && plan.best.score > (chosen.score ?? 0) + 6) s.upgrade = toSuggestion(plan.best, { recommended: true });
+  }
   step('connect', 'done', textOnly ? `${chosen.id} — for text tasks only` : `AUDA now thinks with ${chosen.id}`);
-  s.result = { model: chosen.id, context, tps: speed?.tps, tools: !textOnly, embeddings: embed };
+  s.result = { model: chosen.id, context, tps: speed?.tps, predictedTps: chosen.tps, placement: chosen.placement, gpuShare: chosen.gpuShare, variant: chosen.variant, tools: !textOnly, embeddings: embed };
   s.outcome = textOnly ? 'text-only' : 'connected';
-  s.suggestions = textOnly ? suggest(hw) : undefined;
+  s.suggestions = textOnly ? suggest(hw, pref) : undefined;
   s.message = textOnly
-    ? `Connected ${chosen.id} for summaries and chat. For agents, download a tool-calling model — ${suggest(hw)[0].name} suits ${hw ? 'this machine' : 'most machines'}.`
+    ? `Connected ${chosen.id} for summaries and chat. For agents, download a tool-calling model${s.suggestions?.[0] ? ` — ${s.suggestions[0].name} suits ${hw ? 'this machine' : 'most machines'}` : ''}.`
     : `Ready: ${chosen.id}${context ? ` with ${Math.round(context / 1024)}k context` : ''}${speed ? `, about ${speed.tps} tokens a second` : ''}. Nothing leaves your network.`;
   return s;
 }
@@ -478,7 +416,7 @@ async function heal(kind: 'down' | 'not-loaded' | 'context' | 'preload', model: 
     lastRestart = now();
     await startServer(l.baseUrl);
     // A restarted server has nothing in memory; load the model as it was, so the retry doesn't hit a cold start.
-    const loaded = l.api === 'v1' ? await loadModel(l.baseUrl, model, l.desiredContext ?? l.contextLength ?? 32_768).catch(() => null) : null;
+    const loaded = l.api === 'v1' ? await loadModel(l.baseUrl, model, l.desiredContext ?? l.contextLength ?? 32_768, keyOf(), l.loadSettings ?? {}).catch(() => null) : null;
     if (loaded) { liveState.loaded = true; liveState.context = loaded.context; }
     activity('recover', 'Restarted LM Studio’s server', { detail: `It had stopped answering at ${l.baseUrl}; AUDA started it again${loaded ? `, loaded ${model} (${Math.round(loaded.context / 1024)}k context)` : ''} and carried on.` });
     return;
@@ -487,7 +425,7 @@ async function heal(kind: 'down' | 'not-loaded' | 'context' | 'preload', model: 
   const cur = liveState.context ?? l.contextLength ?? 8192;
   const ctx = kind === 'context' ? Math.min(max, Math.max(cur * 2, 16_384), 131_072) : (l.desiredContext ?? Math.min(l.contextLength ?? 32_768, 32_768));
   if (kind === 'context' && ctx <= cur) throw new Error(`${model} is already at its largest context (${Math.round(cur / 1024)}k)`);
-  const r = await loadModel(l.baseUrl, model, ctx);
+  const r = await loadModel(l.baseUrl, model, ctx, keyOf(), l.loadSettings ?? {});
   liveState.loaded = true; liveState.context = r.context;
   saveLocal({ contextLength: r.context, ...(kind === 'context' ? { desiredContext: r.context } : {}) });
   activity('recover', kind === 'context' ? `Gave ${model} a larger context` : `Loaded ${model}`, { detail: kind === 'context' ? `The conversation outgrew its window; AUDA reloaded it with ${Math.round(r.context / 1024)}k context and retried.` : `It wasn’t in memory (LM Studio unloads idle models); AUDA loaded it with ${Math.round(r.context / 1024)}k context.` });
