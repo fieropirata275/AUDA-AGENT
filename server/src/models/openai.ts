@@ -120,19 +120,50 @@ export async function chat(cfg: OAIConfig, a: { system?: string; messages: Msg[]
   return { content, stopReason, usage: { input: j.usage?.prompt_tokens ?? 0, output: j.usage?.completion_tokens ?? 0 }, model: j.model ?? cfg.model };
 }
 
-/** List models. Prefers LM Studio's REST API (load state, context length), falls back to /v1/models. */
-export async function listModels(baseUrl: string, apiKey?: string) {
+export interface LocalModel {
+  id: string; type: 'llm' | 'embeddings' | string; state: 'loaded' | 'not-loaded' | 'unknown' | string;
+  contextLength?: number; loadedContext?: number; instances?: string[]; sizeBytes?: number; params?: string;
+  tools?: boolean; vision?: boolean; quantization?: string; arch?: string; publisher?: string; displayName?: string;
+}
+
+/**
+ * List models. Prefers LM Studio's v1 REST API (0.4+: size, capabilities, loaded
+ * instances and their context), then v0 (load state, context length), then the
+ * OpenAI-compatible /v1/models any server has.
+ */
+export async function listModels(baseUrl: string, apiKey?: string): Promise<{ flavor: 'lmstudio' | 'openai'; api: 'v1' | 'v0' | 'openai'; models: LocalModel[] }> {
   const base = baseUrl.replace(/\/+$/, '');
   const headers = apiKey ? { authorization: `Bearer ${apiKey}` } : undefined;
+  const authFail = (r: Response) => { if (r.status === 401 || r.status === 403) throw Object.assign(new Error('LM Studio asks for an API token (authentication is on). Paste the token from LM Studio → Developer → Server settings.'), { status: r.status, auth: true }); };
   try {
-    const r = await fetch(`${base}/api/v0/models`, { headers, signal: AbortSignal.timeout(4000) });
+    const r = await fetch(`${base}/api/v1/models`, { headers, signal: AbortSignal.timeout(4000) });
+    authFail(r);
     if (r.ok) {
       const j: any = await r.json();
-      return { flavor: 'lmstudio' as const, models: (j.data ?? []).map((m: any) => ({ id: m.id, type: m.type ?? 'llm', state: m.state ?? 'unknown', arch: m.arch, quantization: m.quantization, publisher: m.publisher, contextLength: m.max_context_length ?? m.loaded_context_length })) };
+      if (Array.isArray(j.models)) return {
+        flavor: 'lmstudio', api: 'v1', models: j.models.map((m: any): LocalModel => {
+          const inst = Array.isArray(m.loaded_instances) ? m.loaded_instances : [];
+          return {
+            id: m.key, type: m.type === 'embedding' ? 'embeddings' : (m.type ?? 'llm'), state: inst.length ? 'loaded' : 'not-loaded',
+            contextLength: m.max_context_length, loadedContext: inst[0]?.config?.context_length, instances: inst.map((i: any) => i.id),
+            sizeBytes: m.size_bytes, params: m.params_string ?? undefined, tools: m.capabilities?.trained_for_tool_use, vision: m.capabilities?.vision,
+            quantization: m.quantization?.name ?? undefined, arch: m.architecture ?? undefined, publisher: m.publisher, displayName: m.display_name,
+          };
+        }),
+      };
     }
-  } catch { /* not LM Studio, or not reachable */ }
+  } catch (e) { if ((e as any).auth) throw e; /* older LM Studio, or not LM Studio */ }
+  try {
+    const r = await fetch(`${base}/api/v0/models`, { headers, signal: AbortSignal.timeout(4000) });
+    authFail(r);
+    if (r.ok) {
+      const j: any = await r.json();
+      return { flavor: 'lmstudio', api: 'v0', models: (j.data ?? []).map((m: any) => ({ id: m.id, type: m.type === 'embedding' ? 'embeddings' : (m.type ?? 'llm'), state: m.state ?? 'unknown', arch: m.arch, quantization: m.quantization, publisher: m.publisher, contextLength: m.max_context_length ?? m.loaded_context_length, loadedContext: m.loaded_context_length })) };
+    }
+  } catch (e) { if ((e as any).auth) throw e; /* not LM Studio, or not reachable */ }
   const r = await fetch(`${base}/v1/models`, { headers, signal: AbortSignal.timeout(4000) });
+  authFail(r);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const j: any = await r.json();
-  return { flavor: 'openai' as const, models: (j.data ?? []).map((m: any) => ({ id: m.id, type: /embed/i.test(m.id) ? 'embeddings' : 'llm', state: 'unknown' })) };
+  return { flavor: 'openai', api: 'openai', models: (j.data ?? []).map((m: any) => ({ id: m.id, type: /embed/i.test(m.id) ? 'embeddings' : 'llm', state: 'unknown' })) };
 }

@@ -9,6 +9,7 @@ import { resolveSecret } from '../secrets/broker.ts';
 import { log } from '../core/log.ts';
 import { chat as oaiChat } from './openai.ts';
 import { guarded } from '../connectors/runtime.ts';
+import { withHealing } from '../connectors/lmstudio-setup.ts';
 
 export type Role = 'reasoning' | 'utility' | 'vision' | 'coding' | 'fallback';
 export interface RoleTarget { provider: 'anthropic' | 'local' | 'none'; model: string }
@@ -16,7 +17,13 @@ export interface ModelSettings {
   roles: Record<Role, RoleTarget>;
   anthropicSecret?: string;
   /** OpenAI-compatible local server (LM Studio, Ollama, llama.cpp, vLLM). */
-  local?: { baseUrl: string; model: string; kind?: 'lmstudio' | 'openai'; tools?: boolean; apiKeySecret?: string; contextLength?: number };
+  local?: {
+    baseUrl: string; model: string; kind?: 'lmstudio' | 'openai'; tools?: boolean; apiKeySecret?: string; contextLength?: number;
+    /** AUDA may start the server, load the model and heal failures (set by one-click setup). */
+    manage?: boolean; desiredContext?: number; api?: 'v1' | 'v0' | 'openai'; tps?: number; setupAt?: number;
+    /** The planner's load settings for this machine (flash attention, KV placement, batch, GPU share). */
+    loadSettings?: Record<string, unknown>; placement?: string;
+  };
   dailyBudget?: number;      // in currency units (€/$), 0 = unlimited
   monthlyBudget?: number;
 }
@@ -183,10 +190,10 @@ async function callAnthropic(model: string, a: CompleteArgs): Promise<CompleteRe
 async function callLocal(model: string, a: CompleteArgs): Promise<CompleteResult> {
   const l = modelSettings().local;
   if (!l?.baseUrl) throw new Error('No local model endpoint configured');
-  const r = await guarded('lmstudio', () => oaiChat(
+  const r = await guarded('lmstudio', () => withHealing(model, () => oaiChat(
     { baseUrl: l.baseUrl, model, apiKey: resolveSecret(l.apiKeySecret), tools: l.tools },
     { system: a.system, messages: (a.messages ?? [{ role: 'user', content: a.prompt ?? '' }]) as any, tools: a.tools as any[], maxTokens: Math.min(a.maxTokens ?? 4096, 16_384), signal: a.signal },
-  ));
+  )));
   record(a, { provider: 'local', model }, r.usage.input, r.usage.output, true);
   const text = r.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
   return { text, content: r.content as any, toolUses: r.content.filter((b) => b.type === 'tool_use').map((b) => ({ id: b.id, name: b.name, input: b.input })), stopReason: r.stopReason, model: r.model };

@@ -283,6 +283,64 @@ lets the whole agent path run deterministically without an API key.
   OpenAI-compatible server (`models/openai.ts`), with tool calling translated
   both ways. LM Studio is detected on the usual addresses, connected after a
   real tool-calling probe, and health-checked; a circuit breaker protects it.
+* **Zero-touch LM Studio** (`connectors/lmstudio-setup.ts`). One orchestrated,
+  single-flight run — find → server → model → load → tools → speed → connect —
+  whose step-by-step state rides on the settings feed, so every client shows it
+  live. It starts the server with the `lms` CLI when LM Studio is on this
+  machine. It reads hardware (RAM, `nvidia-smi` VRAM, Apple unified memory) into
+  a fast/max memory budget and ranks models from LM Studio's v1 list (tool use,
+  size vs budget, context, loaded). It downloads (`POST /api/v1/models/download`
+  + status polling) and loads with an explicit `context_length`, stepping down
+  32k → 16k → 8k when a load fails for memory. It runs automatically once on
+  first run (nothing configured, no Claude key); `AUDA_LMSTUDIO_AUTO=0` turns
+  that off, and a deliberate disconnect is never undone.
+* **Hardware profile** (`connectors/hardware.ts`):
+  * **Sources:** NVIDIA via `nvidia-smi` (VRAM, compute capability); AMD via
+    amdgpu sysfs (`mem_info_vram_total`, ROCm when `/dev/kfd` exists, else
+    Vulkan); Intel Arc via lspci and a table; Windows adapters via the
+    registry's `qwMemorySize`; Apple silicon via `sysctl` and
+    `system_profiler` (chip, GPU cores, `iogpu.wired_limit_mb`, else 2/3–3/4
+    of RAM).
+  * **CPU and RAM:** `/proc/cpuinfo` or `sysctl` for physical cores and
+    AVX2/AVX-512/AMX/NEON; `dmidecode` for RAM type, speed and modules.
+  * **Bandwidth:** tables of known parts, else estimated (laptop parts ×0.65).
+  * **Derived:** a fast budget (GPU or unified memory), a max budget (plus 80%
+    of RAM minus 2 GB), the backend, a tier, notes and a fingerprint.
+  * **Testing:** parsers are pure functions; `AUDA_FAKE_HW` substitutes a
+    whole profile in tests.
+* **Planner** (`connectors/model-planner.ts`):
+  * **Catalog:** tool-calling models with parameters, active parameters, KV
+    bytes per token, maximum context and an agentic-quality score.
+  * **Per (model × quantization × context):**
+    * memory = weights + KV cache + overhead → placement (`gpu` / `split` with
+      a GPU share — KV moved to RAM when that keeps ≥15% more layers on the
+      GPU / `cpu`); splits must leave 10% of the budget free;
+    * decode tok/s = calibration ÷ (active bytes on GPU ÷ GPU bandwidth +
+      active bytes in RAM ÷ RAM bandwidth + KV reads + fixed per-token cost),
+      with per-backend efficiency;
+    * prompt tok/s from bandwidth (GPU) or cores × vector width (CPU);
+    * agent-step time = 1.5k prompt tokens + 250 output tokens.
+  * **Selection:** the highest score (quality − quantization cost + context
+    bonus + a capped log-speed bonus) among configurations meeting the
+    preference's target, preferring ≥16k context. If none meets it, the
+    fastest usable one, flagged as below target.
+  * **Downloads:** catalog id plus `@variant`; if LM Studio doesn't offer
+    that variant, the plain id, so LM Studio picks the variant for the
+    hardware (MLX on Apple).
+  * **Loads:** `flash_attention`, `offload_kv_cache_to_gpu`,
+    `eval_batch_size` and `context_length` via REST; `--gpu <share>` via
+    `lms`.
+  * **Calibration:** measured tok/s ÷ predicted, smoothed per backend.
+* **Healing.** `withHealing` wraps every local call: connection refused →
+  restart the server with `lms` (≤1/min) and reload the model; "not loaded"
+  → load at the remembered context; context overflow → reload at double the
+  window (up to the model's maximum) and remember it. Each is retried once,
+  single-flight, and logged as a recovery. The health loop also keeps a managed
+  server running and preloads an evicted model before the next call, so a
+  just-in-time load never runs with a small default context. Covered by
+  `server/test/lmstudio.test.ts` and `scripts/e2e-lmstudio.mjs` (a fake `lms`
+  CLI and a fake LM Studio with the v1 API, JIT off, memory limits, eviction
+  and crashes).
 * **Discovery.** Each instance has a stable id and a name, advertises
   `_auda._tcp` over mDNS, answers `AUDA_DISCOVER` UDP broadcasts on port 4611,
   and serves `GET /api/discover` (no secrets).

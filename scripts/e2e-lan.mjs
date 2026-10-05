@@ -35,7 +35,7 @@ const step = (m) => console.log(`  ✓ ${m}`);
 let failed = false, fake;
 try {
   fake = await startFakeLmStudio(LM_PORT);
-  core = spawn(process.execPath, ['--import', 'tsx', 'server/src/index.ts'], { cwd: root, env: { ...process.env, AUDA_DATA: data, AUDA_PORT: String(PORT), AUDA_DISCOVERY_PORT: String(UDP_PORT), LMSTUDIO_URL: `http://127.0.0.1:${LM_PORT}`, ANTHROPIC_API_KEY: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  core = spawn(process.execPath, ['--import', 'tsx', 'server/src/index.ts'], { cwd: root, env: { ...process.env, AUDA_DATA: data, AUDA_PORT: String(PORT), AUDA_DISCOVERY_PORT: String(UDP_PORT), LMSTUDIO_URL: `http://127.0.0.1:${LM_PORT}`, ANTHROPIC_API_KEY: '', AUDA_LMSTUDIO_AUTO: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
   core.stdout.on('data', (d) => { logs += d; }); core.stderr.on('data', (d) => { logs += d; });
   await until('core up', () => api('/api/health'));
 

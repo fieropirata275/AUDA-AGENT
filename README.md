@@ -116,6 +116,7 @@ npm run e2e:agent      # agent path with a scripted model: review/revise, sub-ag
 npm run e2e:reliability# platform drills: DB corruption restore, poison quarantine, frozen-core watchdog, crash loop → safe mode
 npm run e2e:lan        # LM Studio (faithful fake), discovery, pairing, uploads, team chat with @mentions
 npm run e2e:org        # accounts + invites, OAuth/PKCE + refresh, MCP discovery/registration/SSE, shared agents, knowledge, learning
+npm run e2e:lmstudio   # zero-touch LM Studio: auto start, hardware-aware pick, download, load, probe, heal, auto-connect
 npm run e2e:office     # research → spreadsheet, chart, PDF report, deck (pptx/pdf/html), Word; reads its own PDF back
 npm run e2e            # all of them
 ```
@@ -144,6 +145,8 @@ Live state: **Settings → Reliability**.
 | `AUDA_CHROMIUM` | auto-detected | Chromium executable for AUDA's browser |
 | `AUDA_COMPUTER_DRIVER` | `local` | `local` · `docker` · `ssh` |
 | `LMSTUDIO_URL` | auto-detected | LM Studio server address(es), comma-separated |
+| `AUDA_LMSTUDIO_AUTO` | on | Set `0` to stop AUDA setting up LM Studio by itself on first run |
+| `AUDA_LMS_BIN` | auto-detected | Path to LM Studio's `lms` CLI (used to start the server on this machine) |
 | `AUDA_DISCOVERY` | on | Set `0` to stop advertising on the LAN |
 | `AUDA_MAX_RSS_MB` | `2048` | Supervisor restarts the core gracefully above this |
 | `AUDA_STEP_TIMEOUT_MS` | `600000` | Default time budget per task step |
@@ -225,15 +228,79 @@ JSONL.
 
 ## Local models with LM Studio
 
-Run `lms server start` (LM Studio's headless server) on this machine or another
-one on your network. AUDA finds it automatically and tells you. In
-**Connections → LM Studio**: pick a model, choose what to use it for (agents &
-chat, summaries & rules, code, images), and **Test & connect**. AUDA runs a real
-tool-calling probe: models that can call tools drive agents end to end; models
-that can't are used for text tasks only, and AUDA says so. Local-model quirks
-(malformed JSON arguments, tool calls written as text, `<think>` blocks) are
-handled, and context limits trigger the agent's context handoff earlier.
-Set `LMSTUDIO_URL` to point at a non-default address.
+Private, free, and as close to zero setup as it gets. On first run, with no
+model connected, AUDA sets LM Studio up by itself:
+
+* **LM Studio running** on this machine or your network → AUDA picks the best
+  model for agents, loads it, checks it can use tools, measures its speed and
+  connects. You get a notification that it's done.
+* **Installed but not running** → AUDA starts it (`lms server start`) first.
+* **No suitable model** → AUDA plans one for this machine (see below). One
+  click downloads it, with progress, and finishes the setup.
+* **Not installed** → Home shows the one-line install for your OS (or the app
+  link). Once LM Studio is up, AUDA notices within a minute and takes over.
+
+### Planned for your hardware
+
+AUDA profiles the machine and plans the model the way an expert would:
+
+* **It detects:**
+  * GPUs: NVIDIA (`nvidia-smi`), AMD and Intel Arc (sysfs/lspci, or the
+    Windows registry), Apple silicon (chip, GPU cores, wired-memory limit). For
+    each one it records VRAM, backend (CUDA · ROCm · Vulkan · Metal) and memory
+    bandwidth.
+  * The CPU's physical cores and vector extensions (AVX2, AVX-512, AMX, NEON).
+  * RAM type, speed and bandwidth.
+* **It predicts, for every model, quantization and context:**
+  * where the model runs: all on the GPU, split between GPU and RAM, or on the
+    CPU;
+  * tokens per second: memory bandwidth ÷ bytes read per token, which is why
+    mixture-of-experts models read only their active experts;
+  * prompt speed, and how long a typical agent step takes.
+* **It picks the smartest configuration that meets your speed target**:
+  **Fastest** (≥40 tok/s), **Balanced** (≥20) or **Smartest** (≥8, still
+  usable).
+  * Quantization goes up (Q5/Q6/Q8, or 6-/8-bit MLX on a Mac) when there's
+    room, and down when there isn't.
+  * Context is 16k–64k, sized to the memory left over.
+  * If nothing reaches the target, AUDA says so honestly.
+* **It loads the model with matching settings:**
+  * flash attention;
+  * KV cache kept on the GPU, or moved to RAM to fit more layers;
+  * batch size sized to the GPU;
+  * the GPU share when the model is split.
+* **It learns.** Measured speed calibrates the next plan. If you add a GPU or
+  more RAM, AUDA notices and offers to plan again. When a clearly better model
+  fits, it offers it, but never downloads without a click.
+
+| ![Home recommends a model planned for this machine](docs/images/local-setup-pick.png) | ![Setup running step by step, with the download's progress](docs/images/local-setup-progress.png) |
+|---|---|
+| **Planned** for an RTX 4070 + Ryzen 7 7800X3D: predicted speed, quantization, context, GPU share. | **Sets it up** step by step, download included. |
+
+What makes it work well, not just work:
+
+* **Room to think.** Models load through LM Studio's API with an explicit
+  context length. If memory is short, AUDA steps down to a smaller window.
+  Without this, a just-in-time load gets a small default window.
+* **Probed, not assumed.** A real tool-calling test runs on the chosen model. If
+  it fails, AUDA tries the next candidate. Models that only chat are used for
+  text tasks, and AUDA says so.
+* **Kept running.** A stopped server is restarted (and the model reloaded). A
+  model LM Studio unloaded while idle is reloaded when work arrives. A
+  conversation that outgrows its window gets a larger context and is retried.
+  Each fix happens once, is single-flight, and appears in Activity.
+* **Knowledge search.** If an embedding model is there, agents use it. If not,
+  one click adds Nomic Embed (80 MB).
+* **Your call, always.** Everything is in **Connections → LM Studio**: switch
+  models, run setup again, or open **Advanced** to set the address, an API
+  token (if LM Studio's authentication is on) and roles by hand. Disconnecting
+  is never undone automatically.
+
+Downloading and loading use LM Studio 0.4+'s REST API. Older versions still
+connect, and AUDA tells you what to update. Local-model quirks (malformed JSON
+arguments, tool calls written as text, `<think>` blocks) are handled, and the
+context length drives the agent's context handoff. Set `LMSTUDIO_URL` for a
+non-default address, or `AUDA_LMSTUDIO_AUTO=0` to turn first-run setup off.
 
 ## The Android app
 
