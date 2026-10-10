@@ -295,9 +295,9 @@ route('GET', '/api/computer/desktop/stream', async (_req, res) => {
   while (!closed && !res.writableEnded) {
     try {
       const frame=await Proxmox.desktopAction(VM_COMPUTER,'screenshot');
-      if (!closed) res.write('event: frame\\ndata: '+JSON.stringify(frame)+'\\n\\n');
+      if (!closed) res.write('event: frame\ndata: '+JSON.stringify(frame)+'\n\n');
     } catch(e) {
-      if (!closed) res.write('event: error\\ndata: '+JSON.stringify({message:String((e as Error).message)})+'\\n\\n');
+      if (!closed) res.write('event: error\ndata: '+JSON.stringify({message:String((e as Error).message)})+'\n\n');
       break;
     }
     await new Promise(resolve=>setTimeout(resolve,1000));
