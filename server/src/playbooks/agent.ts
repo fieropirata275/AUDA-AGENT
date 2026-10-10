@@ -261,7 +261,9 @@ async function runTool(ctx: StepCtx, ws: string, name: string, input: any, plugi
       // deliver the file itself, not the description.
       const src = input.path ? resolvePath(ws, input.path) : pointedFile(ws, String(input.content ?? ''), String(input.name ?? ''));
       if (!src && !input.content) throw new Permanent('Give save_artifact either path (a file you wrote) or content (the complete file)');
-      const body = src ? deliverableBody(src) : { content: input.content as string, inlined: [] as string[] };
+      const remotePath = ctx.task.agent_id && Proxmox.isEnabled() && input.path ? String(input.path) : null;
+      const body = remotePath ? { content: await Proxmox.guestRead(ctx.task.agent_id, remotePath), inlined: [] as string[] }
+        : src ? deliverableBody(src) : { content: input.content as string, inlined: [] as string[] };
       const a = await ctx.artifact(input.name, body.content, { why: input.why });
       markDelivered(ctx, src, body.inlined);
       ctx.log('act', `Saved ${input.name}`, `${input.why}${src ? `\nFrom ${display(src)}${body.inlined.length ? ` (with ${body.inlined.length} linked file${body.inlined.length > 1 ? 's' : ''} inlined)` : ''}` : ''}`);
