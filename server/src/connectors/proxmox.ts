@@ -124,7 +124,7 @@ export async function guestExec(agentId: string, command: string, timeoutMs = 12
   if (!Number.isInteger(launch.pid)) throw new Error('Guest agent did not return a process ID');
   while (Date.now() - started < timeoutMs) {
     const r = await request<{exited: boolean; exitcode?: number; 'out-data'?: string; 'err-data'?: string}>(c, 'GET', base + '/exec-status?pid=' + launch.pid);
-    if (r.exited) return { code: r.exitcode ?? -1, stdout: r['out-data'] ?? '', stderr: r['err-data'] ?? '', durationMs: Date.now() - started, timedOut: false };
+    if (r.exited) return { code: r.exitcode ?? -1, stdout: Buffer.from(r['out-data'] ?? '', 'base64').toString('utf8'), stderr: Buffer.from(r['err-data'] ?? '', 'base64').toString('utf8'), durationMs: Date.now() - started, timedOut: false };
     await new Promise(resolve => setTimeout(resolve, 1000));
   }
   throw new Error('Guest command exceeded its timeout (the guest process may still be running)');
