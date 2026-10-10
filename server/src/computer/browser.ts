@@ -282,6 +282,65 @@ async function actUnlocked(a: BrowserAction): Promise<PageRead & { did: string }
   return { ...r, did };
 }
 
+const PERF_SCRIPT = `(() => {
+  var nav = performance.getEntriesByType('navigation')[0] || {};
+  var res = performance.getEntriesByType('resource');
+  var paint = performance.getEntriesByType('paint');
+  var fcp = (paint.filter(function (p) { return p.name === 'first-contentful-paint'; })[0] || {}).startTime;
+  var lcp = window.__auda_lcp || null, cls = window.__auda_cls || 0;
+  var bytes = (nav.transferSize || 0), byType = {};
+  res.forEach(function (r) { bytes += r.transferSize || 0; var t = r.initiatorType || 'other'; byType[t] = byType[t] || { count: 0, bytes: 0 }; byType[t].count++; byType[t].bytes += r.transferSize || 0; });
+  var heavy = res.slice().sort(function (a, b) { return (b.transferSize || 0) - (a.transferSize || 0); }).slice(0, 8).map(function (r) { return { url: r.name, type: r.initiatorType, kb: Math.round((r.transferSize || 0) / 1024), ms: Math.round(r.duration) }; });
+  var slow = res.slice().sort(function (a, b) { return b.duration - a.duration; }).slice(0, 5).map(function (r) { return { url: r.name, ms: Math.round(r.duration) }; });
+  return {
+    ttfb: Math.round(nav.responseStart - nav.startTime || 0), domContentLoaded: Math.round(nav.domContentLoadedEventEnd || 0), load: Math.round(nav.loadEventEnd || 0),
+    fcp: fcp ? Math.round(fcp) : null, lcp: lcp ? Math.round(lcp) : null, cls: Math.round(cls * 1000) / 1000,
+    requests: res.length + 1, transferKB: Math.round(bytes / 1024), byType: byType, heaviest: heavy, slowest: slow,
+    protocol: nav.nextHopProtocol || null, domNodes: document.getElementsByTagName('*').length,
+    images: document.images.length, scripts: document.scripts.length, title: document.title,
+  };
+})()`;
+
+/**
+ * Measure how a page loads, the way a person would feel it: a fresh, uncached load in the real browser, with
+ * time to first byte, first/largest contentful paint, layout shift, total load, page weight by type, the heaviest
+ * and slowest requests — plus a screenshot. Optionally on a throttled mobile connection.
+ */
+export function measurePerformance(url: string, mobile = false) { return withBrowser(async () => {
+  const p = await ensure();
+  mark('Testing performance of', url);
+  const cdp = await p.context().newCDPSession(p);
+  try {
+    await cdp.send('Network.enable');
+    await cdp.send('Network.clearBrowserCache');
+    await cdp.send('Network.setCacheDisabled', { cacheDisabled: true });
+    if (mobile) {
+      await cdp.send('Network.emulateNetworkConditions', { offline: false, latency: 150, downloadThroughput: (1.6 * 1024 * 1024) / 8, uploadThroughput: (750 * 1024) / 8 });
+      await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 });
+      await p.setViewportSize({ width: 390, height: 844 });
+    }
+    await p.addInitScript(`try { new PerformanceObserver(function (l) { var e = l.getEntries(); window.__auda_lcp = e[e.length - 1].startTime; }).observe({ type: 'largest-contentful-paint', buffered: true });
+      window.__auda_cls = 0; new PerformanceObserver(function (l) { l.getEntries().forEach(function (e) { if (!e.hadRecentInput) window.__auda_cls += e.value; }); }).observe({ type: 'layout-shift', buffered: true }); } catch (e) {}`);
+    const t0 = Date.now();
+    const resp = await p.goto(url, { waitUntil: 'load', timeout: 60_000 });
+    await p.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
+    const wall = Date.now() - t0;
+    await p.waitForTimeout(500);
+    const m: any = await p.evaluate(PERF_SCRIPT);
+    const shot = await p.screenshot({ type: 'png' });
+    return { url: p.url(), status: resp?.status() ?? null, mobile, wallMs: wall, ...m, screenshot: shot.toString('base64') };
+  } finally {
+    await cdp.send('Network.setCacheDisabled', { cacheDisabled: false }).catch(() => {});
+    if (mobile) {
+      await cdp.send('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 }).catch(() => {});
+      await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 }).catch(() => {});
+      await p.setViewportSize(VIEWPORT).catch(() => {});
+    }
+    await cdp.detach().catch(() => {});
+    activity = null;
+  }
+}); }
+
 export function screenshot(): Promise<Buffer> {
   return withBrowser(async () => (await ensure()).screenshot({ type: 'png' }));
 }

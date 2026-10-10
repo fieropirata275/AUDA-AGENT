@@ -5,7 +5,8 @@
  * rather than answered and forgotten.
  */
 import type Anthropic from '@anthropic-ai/sdk';
-import { insert, now, q, uid, update } from '../core/db.ts';
+import { getSetting, insert, json, now, q, uid, update } from '../core/db.ts';
+import { on } from '../core/bus.ts';
 import { currentUserId } from '../core/context.ts';
 import { changed } from '../core/changes.ts';
 import { emit } from '../core/bus.ts';
@@ -45,6 +46,9 @@ export async function handleUserMessage(conversationId: string, text: string, ch
   }
   setListening();
   emit('message.received', { subjectType: 'conversation', subjectId: conversationId, payload: { channel } });
+  // With a model that can use tools, the reply is a live run of the full agent (search, browse, Python, files…),
+  // shown in the conversation as it works and filled in with the answer and its attachments when done.
+  if (conversationId !== 'group' && canUseTools() && getSetting('chat.runs', true)) return startChatRun(conversationId, text, conv.space_id, msgId, channel);
   let reply: Reply;
   try {
     reply = canUseTools() ? await withModel(conversationId, text, conv.space_id, msgId).catch((e) => {
@@ -58,6 +62,47 @@ export async function handleUserMessage(conversationId: string, text: string, ch
   addMessage(conversationId, 'auda', reply.text, reply.objects, channel, 'auda');
   return reply;
 }
+
+// ─── chat runs ───────────────────────────────────────────────────────────────
+
+/** The conversation so far, for the run's context: follow-ups ("so when is it?") need what was said. */
+function transcript(conversationId: string, excludeId?: string) {
+  const rows = q.all('SELECT id, role, content, objects_json FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 14', conversationId).reverse();
+  return rows.filter((m) => m.id !== excludeId && (m.content ?? '').trim()).map((m) => {
+    const files = json<any[]>(m.objects_json, []).filter((o) => o.type === 'artifact').map((o) => q.get('SELECT name, path FROM artifacts WHERE id = ?', o.id)).filter((a): a is Record<string, any> => !!a).map((a) => `${a.name} (${a.path})`);
+    const body = m.role === 'user' ? m.content : m.content.length > 2500 ? `${m.content.slice(0, 2500)}…` : m.content;
+    return `${m.role === 'user' ? 'User' : 'You'}: ${body}${files.length ? `\n[files attached: ${files.join(', ')}]` : ''}`;
+  }).join('\n\n');
+}
+
+function startChatRun(conversationId: string, text: string, spaceId: string | null, userMsgId: string, channel: string): Reply {
+  const history = transcript(conversationId, userMsgId).split('\n\n').slice(0, -1).join('\n\n'); // everything before this message
+  const replyId = addMessage(conversationId, 'auda', '', [], channel, 'auda');
+  const taskId = createTask({
+    title: text.replace(/\s+/g, ' ').slice(0, 90), goal: text, playbook: 'agent', spaceId,
+    origin: { type: 'chat', conversationId, messageId: userMsgId, replyId, chatRun: true },
+    input: { chat: { conversationId, replyId }, context: history ? `The conversation so far:\n${history}` : undefined },
+  });
+  update('messages', replyId, { objects_json: JSON.stringify([{ type: 'run', id: taskId }]) });
+  changed('message', replyId);
+  return { text: '', objects: [{ type: 'run', id: taskId }] as any };
+}
+
+/** When a chat run ends, its reply message gets the answer and everything it made (files, visuals, cards). */
+function finishChatRun(taskId: string) {
+  const t = q.get('SELECT * FROM tasks WHERE id = ?', taskId);
+  const origin = json<any>(t?.origin_json, {});
+  if (!t || !origin.chatRun || !origin.replyId) return;
+  const vars = json<any>(t.checkpoint_json, {});
+  const files = q.all("SELECT id, name FROM artifacts WHERE task_id = ? AND name NOT LIKE 'output-%' ORDER BY created_at", taskId).map((a) => ({ type: 'artifact', id: a.id }));
+  const extra = (vars.chatObjects ?? []) as { type: string; id: string }[];
+  const content = t.state === 'COMPLETED' ? (t.result_summary ?? '').replace(/\n\nFiles: [^\n]*$/, '').trim()
+    : t.state === 'CANCELLED' ? 'Stopped.' : `I couldn’t finish that: ${t.diagnosis ?? t.error ?? 'something went wrong'}`;
+  update('messages', origin.replyId, { content, objects_json: JSON.stringify([{ type: 'run', id: taskId }, ...extra, ...files]) });
+  update('conversations', origin.conversationId, { updated_at: now() });
+  changed('message', origin.replyId);
+}
+for (const ev of ['task.completed', 'task.failed', 'task.cancelled']) on(ev, (e) => { if (e.subjectId) finishChatRun(e.subjectId); });
 
 // ─── model path ──────────────────────────────────────────────────────────────
 
@@ -113,7 +158,7 @@ Playbooks: ${playbooks().map((p) => `${p.id} — ${p.description}`).join('; ')}`
   return { text: 'Done.', objects };
 }
 
-async function runChatTool(name: string, i: any, spaceId: string | null, msgId: string, objects: Reply['objects']): Promise<string> {
+export async function runChatTool(name: string, i: any, spaceId: string | null, msgId: string, objects: Reply['objects']): Promise<string> {
   const origin = { type: 'chat', messageId: msgId };
   switch (name) {
     case 'take_responsibility': {

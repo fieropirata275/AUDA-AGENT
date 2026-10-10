@@ -53,7 +53,7 @@ export interface CustomAgent {
   createdAt: number; updatedAt: number;
 }
 export interface KbDocument { id: string; title: string; source: string; sourceRef?: string; kind: 'doc' | 'lesson' | 'skill'; chars: number; passages: number; confidence: number; uses: number; helpful: number; state: string; error?: string; createdAt: number; updatedAt: number }
-export interface Conversation { id: string; title: string; channel: string; spaceId?: string; updatedAt: number }
+export interface Conversation { id: string; title: string; channel: string; spaceId?: string; userId?: string; pinned?: number | boolean; updatedAt: number }
 export interface Space { id: string; name: string; slug: string; description?: string; icon?: string }
 export interface Device { id: string; name: string; state: string; platform?: string; grants: Record<string, boolean>; lastSeenAt?: number; createdAt: number; revokedAt?: number }
 export interface Service { name: string; running: boolean; pid?: number; logLevel?: string; path: string }

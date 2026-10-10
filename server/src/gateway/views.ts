@@ -110,7 +110,7 @@ const loaders: Partial<Record<Entity, (id: string) => any>> = {
   rule: (id) => { const r = q.get('SELECT * FROM rules WHERE id = ?', id); return r && ruleView(r); },
   notification: (id) => { const r = q.get('SELECT * FROM notifications WHERE id = ?', id); return r && notificationView(r); },
   message: (id) => { const r = q.get('SELECT * FROM messages WHERE id = ?', id); return r && messageView(r); },
-  conversation: (id) => q.get('SELECT id, title, channel, space_id AS spaceId, user_id AS userId, updated_at AS updatedAt FROM conversations WHERE id = ?', id),
+  conversation: (id) => q.get('SELECT id, title, channel, space_id AS spaceId, user_id AS userId, pinned, updated_at AS updatedAt FROM conversations WHERE id = ?', id),
   space: (id) => q.get('SELECT * FROM spaces WHERE id = ?', id),
   device: (id) => { const r = q.get('SELECT * FROM devices WHERE id = ?', id); return r && deviceView(r); },
   computer: () => computerView(),
