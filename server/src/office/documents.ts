@@ -21,6 +21,7 @@ import ExcelJS from 'exceljs';
 import { chartSvg, validateChart } from './charts.ts';
 import { inlineImage, svgToPng } from './render.ts';
 import { extractFile } from '../agents/knowledge.ts';
+import { zipTexts } from './zip.ts';
 
 const run = promisify(execFile);
 const ACCENT = 'C25E2C';
@@ -248,11 +249,9 @@ export async function readDocument(abs: string, maxChars = 200_000): Promise<{ t
     return { text: parts.join('\n').slice(0, maxChars), kind: 'spreadsheet' };
   }
   if (ext === '.pptx') {
-    const list = (await run('unzip', ['-Z1', abs], { maxBuffer: 8 << 20 })).stdout.split('\n').filter((f) => /^ppt\/slides\/slide\d+\.xml$/.test(f))
-      .sort((a, b) => Number(/(\d+)/.exec(a)![1]) - Number(/(\d+)/.exec(b)![1]));
+    const list = await zipTexts(abs, /^ppt\/slides\/slide\d+\.xml$/);
     const parts: string[] = [];
-    for (const [i, f] of list.entries()) {
-      const xml = (await run('unzip', ['-p', abs, f], { maxBuffer: 16 << 20 })).stdout;
+    for (const [i, { text: xml }] of list.entries()) {
       const text = [...xml.matchAll(/<a:t>([^<]*)<\/a:t>/g)].map((m) => m[1]).join(' ').replace(/\s+/g, ' ').trim();
       parts.push(`## Slide ${i + 1}\n${text}`);
     }

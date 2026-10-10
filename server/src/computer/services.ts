@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { config } from '../core/config.ts';
+import { sanitizedEnv } from './driver.ts';
 import { publish } from '../core/streams.ts';
 
 const DEMO_DIR = path.join(config.workspaceDir, 'services', 'demo-api');
@@ -70,7 +71,7 @@ export function status(name = 'demo-api'): ServiceStatus {
 export function start(name = 'demo-api') {
   if (status(name).running) return status(name);
   const dir = path.join(config.workspaceDir, 'services', name);
-  const child = spawn(process.execPath, ['server.js'], { cwd: dir, detached: true, stdio: 'ignore', env: { PATH: process.env.PATH, HOME: config.workspaceDir } });
+  const child = spawn(process.execPath, ['server.js'], { cwd: dir, detached: true, stdio: 'ignore', windowsHide: true, env: sanitizedEnv() });
   child.unref();
   fs.writeFileSync(path.join(dir, `${name}.pid`), String(child.pid));
   publish('services', status(name));

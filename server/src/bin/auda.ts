@@ -12,6 +12,9 @@ import { fork } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
+// Set here rather than in the npm script, so `npm start` works in cmd and PowerShell too.
+process.env.NODE_ENV ??= 'production';
+
 const entry = path.join(import.meta.dirname, '..', 'index.ts');
 const port = Number(process.env.AUDA_PORT ?? 4610);
 const dataDir = path.resolve(process.env.AUDA_DATA ?? path.join(import.meta.dirname, '../../../data'));

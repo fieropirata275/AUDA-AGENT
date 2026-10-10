@@ -12,8 +12,8 @@
     "dev:server": "tsx watch --clear-screen=false server/src/index.ts",
     "dev:web": "vite --config web/vite.config.ts",
     "build": "vite build --config web/vite.config.ts",
-    "start": "NODE_ENV=production tsx server/src/bin/auda.ts",
-    "start:core": "NODE_ENV=production tsx server/src/index.ts",
+    "start": "tsx server/src/bin/auda.ts",
+    "start:core": "tsx server/src/index.ts",
     "typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p web/tsconfig.json --noEmit",
     "test": "tsx --test server/test/*.test.ts",
     "e2e": "node scripts/e2e.mjs && node scripts/e2e-agent.mjs && node scripts/e2e-reliability.mjs && node scripts/e2e-lan.mjs && node scripts/e2e-org.mjs && node scripts/e2e-office.mjs && node scripts/e2e-lmstudio.mjs",
@@ -23,13 +23,15 @@
     "e2e:lmstudio": "node scripts/e2e-lmstudio.mjs",
     "e2e:slice": "node scripts/e2e.mjs",
     "e2e:agent": "node scripts/e2e-agent.mjs",
-    "e2e:reliability": "node scripts/e2e-reliability.mjs"
+    "e2e:reliability": "node scripts/e2e-reliability.mjs",
+    "smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",
     "bonjour-service": "^1.4.4",
     "docx": "^9.8.1",
     "exceljs": "^4.4.0",
+    "jszip": "^3.10.2",
     "marked": "^16.4.2",
     "playwright-core": "^1.63.0",
     "pptxgenjs": "^4.0.1",

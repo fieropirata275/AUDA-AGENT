@@ -25,6 +25,8 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - name: Smoke — npm start on a fresh install
+        run: npm run smoke
       - name: End-to-end — vertical slice
         run: npm run e2e:slice
         env: { AUDA_CHROMIUM: /usr/bin/google-chrome }
@@ -41,6 +43,26 @@ jobs:
       - name: End-to-end — office work (research, PDF, slides, Word, Excel)
         run: npm run e2e:office
         env: { AUDA_CHROMIUM: /usr/bin/google-chrome }
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Smoke — npm start, commands through Git Bash
+        run: npm run smoke
+      - name: Smoke — commands through PowerShell (no Git Bash)
+        run: npm run smoke
+        env: { AUDA_SHELL: powershell.exe }
+      - name: End-to-end — vertical slice (watch, investigate, approve, fix, remember, recover)
+        run: npm run e2e:slice
 
   android:
     name: Android app

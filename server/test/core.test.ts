@@ -62,6 +62,15 @@ test('command classification is conservative', () => {
   assert.equal(classifyCommand('find . -name "*.log" -delete'), 'terminal.destructive');
   assert.equal(classifyCommand(': > logs/app.log'), 'terminal.destructive');
   assert.equal(classifyCommand('sudo systemctl restart x'), 'terminal.destructive');
+  // PowerShell / cmd, on Windows
+  assert.equal(classifyCommand('Get-ChildItem -Recurse | Select-String TODO'), 'terminal.read');
+  assert.equal(classifyCommand('cat README.md'), 'terminal.read');
+  assert.equal(classifyCommand('Set-Content notes.txt "hi"'), 'terminal.write');
+  assert.equal(classifyCommand('winget install Python.Python.3.12'), 'terminal.write');
+  assert.equal(classifyCommand('Remove-Item -Recurse -Force logs'), 'terminal.destructive');
+  assert.equal(classifyCommand('del /q logs\\*.log'), 'terminal.destructive');
+  assert.equal(classifyCommand('Stop-Process -Name node'), 'terminal.destructive');
+  assert.equal(classifyCommand('taskkill /F /IM python.exe'), 'terminal.destructive');
 });
 
 test('rule compiler: the examples from the brief', () => {

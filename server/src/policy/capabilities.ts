@@ -80,10 +80,15 @@ export function classifyCommand(cmd: string): 'terminal.read' | 'terminal.write'
     || /systemctl\s+(stop|disable|mask)|docker\s+(rm|kill|stop|system\s+prune)|git\s+(reset\s+--hard|push\s+(-f|--force)|clean)/.test(s)
     || /find\b.*\s-(delete|exec\s+rm)/.test(s)
     || /(^|[;&|]\s*)(:|true)?\s*>\s*[\w./~-]+/.test(redirects.trim());
-  if (destructive) return 'terminal.destructive';
+  // PowerShell and cmd (AUDA's computer on Windows): verbs are case-insensitive.
+  const psDestructive = /\b(remove-item|remove-\w+|clear-content|clear-recyclebin|format-volume|stop-process|stop-service|stop-computer|restart-computer|taskkill|del|erase|rd)\b/i.test(s)
+    || /\b(ri|rm|rmdir)\s+.*-(recurse|force)\b/i.test(s);
+  if (destructive || psDestructive) return 'terminal.destructive';
   const write =
     /\b(mv|cp|mkdir|touch|tee|gzip|gunzip|tar|zip|unzip|chmod|chown|ln|npm|pnpm|pip|apt|apt-get)\b/.test(s)
     || /sed\s+-i|git\s+(commit|push|checkout|merge|pull)|curl\s.*-X\s*(POST|PUT|PATCH|DELETE)/.test(s)
-    || />/.test(redirects);
+    || />/.test(redirects)
+    || /\b(new-item|set-content|add-content|out-file|copy-item|move-item|rename-item|expand-archive|compress-archive|set-itemproperty|new-itemproperty|start-process|xcopy|robocopy|copy|move|ren|winget|choco|scoop)\b/i.test(s)
+    || /invoke-(webrequest|restmethod)\b.*-method\s+(post|put|patch|delete)/i.test(s);
   return write ? 'terminal.write' : 'terminal.read';
 }

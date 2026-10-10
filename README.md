@@ -70,13 +70,45 @@ reports, reminders, rules and memory. Connect Claude to unlock open-ended work.
 
 ## Quick start
 
-Requires Node.js ≥ 22.12 and (for the browser) Chromium.
+Requires Node.js 22.12+ (22 or 24 LTS recommended) and, for AUDA's browser
+and PDF making, Chrome, Chromium or Edge. AUDA finds an installed one on its own.
+It runs on Windows, macOS and Linux.
 
 ```bash
 npm install
 npm run build        # build the UI
 npm start            # AUDA core + process supervisor on http://localhost:4610
 ```
+
+Then open **http://localhost:4610**.
+
+<details>
+<summary><b>Windows</b> (PowerShell or cmd)</summary>
+
+The same three commands work. A few things help:
+
+* **Git for Windows** (`winget install Git.Git`): when it's installed, AUDA's
+  computer runs commands in Git Bash, so agents get the Unix tools they know
+  best (`ls`, `grep`, `sed`, `curl`). Without it, AUDA uses PowerShell and tells
+  its agents so. Set `AUDA_SHELL` to choose the shell yourself.
+* **Reading PDFs** needs Poppler's `pdftotext`: `winget install oschwartz10612.Poppler`
+  or `choco install poppler`. Making PDFs needs nothing extra; Chrome or Edge
+  is enough.
+* Commands are classified the same way on Windows. PowerShell and cmd verbs
+  that delete or stop things (`Remove-Item`, `del`, `Stop-Process`,
+  `taskkill`…) ask for approval under your rules, just like `rm` or `kill`.
+* Node 25 works, but npm warns about one dependency's engine range. Node 22 or
+  24 LTS avoids the warning.
+
+</details>
+
+<details>
+<summary><b>macOS</b></summary>
+
+`brew install node poppler` and the three commands above. Apple silicon is
+detected for local models (see [Local models with LM Studio](#local-models-with-lm-studio)).
+
+</details>
 
 Development (hot reload for core and UI):
 
@@ -90,8 +122,8 @@ npm run dev          # UI on http://localhost:5173, API on :4610
    AUDA creates a responsibility and starts watching `demo-api` on its own computer.
 2. Open **Computer → Services** and switch `demo-api` to **debug** logging.
    The volume starts filling at ~450 KB/s; the gauge climbs on Home.
-3. At 80% the watcher fires. AUDA investigates with real commands
-   (`du`, `find`, growth sampling, `tail`, `cat config.json`), finds the cause and
+3. At 80% the watcher fires. AUDA investigates (sizes, the largest files, growth
+   sampling, the log's tail, the service config), finds the cause and
    asks — once, specifically — whether it may delete old archives and switch logging back.
 4. Approve. The card resolves, the task resumes, AUDA verifies the fix, writes an
    incident report, stores episodic + procedural memory and returns to **Watching**.
@@ -111,6 +143,7 @@ independently reviewed against your criteria before calling it finished.
 
 ```bash
 npm test               # unit tests: scheduler, rules, policy, broker idempotency, memory, reminders
+npm run smoke          # `npm start` on a fresh install: boots, serves the UI, runs a command on AUDA's computer (CI: Linux + Windows)
 npm run e2e:slice      # the vertical slice above, headless
 npm run e2e:agent      # agent path with a scripted model: review/revise, sub-agents, loops, approvals, crash mid-command
 npm run e2e:reliability# platform drills: DB corruption restore, poison quarantine, frozen-core watchdog, crash loop → safe mode
@@ -146,6 +179,7 @@ Live state: **Settings → Reliability**.
 | `AUDA_COMPUTER_DRIVER` | `local` | `local` · `docker` · `ssh` |
 | `LMSTUDIO_URL` | auto-detected | LM Studio server address(es), comma-separated |
 | `AUDA_LMSTUDIO_AUTO` | on | Set `0` to stop AUDA setting up LM Studio by itself on first run |
+| `AUDA_SHELL` | auto | Shell for AUDA's computer: bash, or on Windows Git Bash if installed, else PowerShell |
 | `AUDA_LMS_BIN` | auto-detected | Path to LM Studio's `lms` CLI (used to start the server on this machine) |
 | `AUDA_DISCOVERY` | on | Set `0` to stop advertising on the LAN |
 | `AUDA_MAX_RSS_MB` | `2048` | Supervisor restarts the core gracefully above this |
