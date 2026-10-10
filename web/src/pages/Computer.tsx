@@ -16,6 +16,7 @@ export function Computer() {
     try { setVm(await api('/api/computer')); setError(''); } catch (e) { setError((e as Error).message); }
   };
   useEffect(() => { void refresh(); }, []);
+  useEffect(() => { const stream = new EventSource('/api/computer/desktop/stream'); stream.addEventListener('frame', (ev) => { try { const f = JSON.parse((ev as MessageEvent).data); if (f.pngBase64) setScreen('data:image/png;base64,' + f.pngBase64); } catch {} }); stream.addEventListener('error', () => {}); return () => stream.close(); }, []);
   const take = async (who: 'human'|'auda') => { await post('/api/computer/control', {who}); await refresh(); };
   const command = async (e: React.FormEvent) => {
     e.preventDefault(); if (!cmd.trim()) return;
@@ -53,7 +54,7 @@ export function Computer() {
       <div className="row"><strong>VM desktop</strong><Button size="sm" onClick={() => void screenshot()}>Refresh screenshot</Button></div>
       {screen ? <img alt="Live capture from guest VM" src={screen} style={{width:'100%',maxWidth:1000,objectFit:'contain',cursor:'crosshair'}}
         onClick={e => { if (vm?.controller !== 'human') return; const r=e.currentTarget.getBoundingClientRect(); const x=Math.round((e.clientX-r.left)*e.currentTarget.naturalWidth/r.width); const y=Math.round((e.clientY-r.top)*e.currentTarget.naturalHeight/r.height); void desktop('click',{x,y}); }} /> :
-        <p className="small muted">Press Refresh screenshot. Guest must run X11 with xdotool and ImageMagick.</p>}
+        <p className="small muted">Live stream connects automatically. Guest needs X11 and ImageMagick.</p>}
       <div className="row"><Button size="sm" onClick={() => { const key=prompt('Key, e.g. Return or ctrl+l'); if(key) void desktop('key',{key}); }}>Send key</Button>
         <Button size="sm" onClick={() => { const text=prompt('Type text into VM'); if(text) void desktop('type',{text}); }}>Type text</Button></div>
     </div>
