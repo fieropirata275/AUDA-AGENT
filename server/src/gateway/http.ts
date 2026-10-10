@@ -43,6 +43,7 @@ import { registerTeamRoutes } from './teamRoutes.ts';
 import { busStats } from '../core/bus.ts';
 import { backup, bootReport, listBackups } from '../core/db.ts';
 import { browserQueue } from '../computer/browser.ts';
+import * as Proxmox from '../connectors/proxmox.ts';
 
 type Req = http.IncomingMessage & { body?: any; params: Record<string, string>; query: URLSearchParams; userId?: string };
 type Handler = (req: Req, res: http.ServerResponse) => Promise<any> | any;
@@ -238,7 +239,23 @@ route('POST', '/api/notifications/read', () => { q.run('UPDATE notifications SET
 
 // ─── computer ────────────────────────────────────────────────────────────────
 
-route('GET', '/api/computer', () => ({ ...computerView(), transcript: terminal.transcript() }));
+const VM_COMPUTER = 'auda-computer';
+const vmOnly = () => {
+  if (!Proxmox.isEnabled()) throw new HttpError(503, 'AUDA Computer requires a connected Proxmox server. Host execution is disabled.');
+};
+route('GET', '/api/computer', async () => {
+  vmOnly();
+  const vm = await Proxmox.ensureAgentVm(VM_COMPUTER);
+  return { ...computerView(), name: 'AUDA’s Computer — Proxmox VM', state: vm.state, driver: { driver: 'proxmox', label: `Proxmox VM ${vm.vmid} on ${vm.node}` },
+    browser: { available: false, running: false, url: 'about:blank' }, services: [], transcript: [] };
+});
+route('GET', '/api/computer/fs', async (req) => {
+  vmOnly();
+  const p = req.query.get('path') ?? '.';
+  const output = await Proxmox.guestList(VM_COMPUTER, p === '~' ? '.' : p);
+  return { path: p, entries: [], listing: output, artifacts: [] };
+});
+/* Legacy local computer fs endpoint disabled in Proxmox-only mode.
 route('GET', '/api/computer/fs', (req) => {
   const p = req.query.get('path') ?? '~';
   return { path: p, entries: files.list(p), artifacts: q.all('SELECT id, path, why, task_id FROM artifacts').filter((a) => a.path.startsWith(p.replace(/\/$/, '') + '/')) };
@@ -248,22 +265,29 @@ route('GET', '/api/computer/file', (req) => {
   const art = q.get('SELECT * FROM artifacts WHERE path = ?', p);
   return { ...files.read(p, 120_000), artifact: art ? V.artifactView(art) : null };
 });
+*/
+route('GET', '/api/computer/file', async (req) => { vmOnly(); const path = String(req.query.get('path') ?? ''); const text = await Proxmox.guestRead(VM_COMPUTER, path); return { text, size: Buffer.byteLength(text), path }; });
 route('POST', '/api/computer/control', (req) => { setController(req.body?.who === 'human' ? 'human' : 'auda'); return computerView(); });
 const requireHuman = () => { if (controller() !== 'human') throw new HttpError(409, 'Take control of AUDA’s computer first'); };
 route('POST', '/api/computer/terminal', async (req) => {
   requireHuman();
-  const r = await terminal.run(String(req.body?.cmd ?? ''), { actor: 'human' });
+  vmOnly();
+  const r = await Proxmox.runInVm(VM_COMPUTER, String(req.body?.cmd ?? ''));
   insert('audit_log', { id: uid('aud'), ts: now(), actor: 'user', capability: 'terminal', target: req.body?.cmd, decision: 'user', result: r.code === 0 ? 'ok' : 'error', detail: `exit ${r.code}` });
   return r;
 });
-route('POST', '/api/computer/browser', async (req) => { requireHuman(); await browser.humanInput(req.body ?? {}); return { ok: true }; });
+route('POST', '/api/computer/browser', async (req) => { vmOnly(); requireHuman(); throw new HttpError(501, 'Browser input via the host is disabled; use the VM desktop endpoint'); /* await browser.humanInput(req.body ?? {}); return { ok: true }; */ });
 route('POST', '/api/computer/browser/hang', () => {
+  vmOnly(); throw new HttpError(501, 'Host browser is disabled');
   const ok = browser.hangForDemo();
   if (ok) activity('user', 'You froze AUDA’s browser to test recovery', { detail: 'The supervisor should notice within ~10 seconds.' });
   return { ok };
 });
-route('POST', '/api/computer/browser/open', async () => { await browser.ensure(); return browser.status(); });
+route('POST', '/api/computer/browser/open', async () => { vmOnly(); throw new HttpError(501, 'Host browser is disabled'); });
+route('POST', '/api/computer/desktop', async (req) => { vmOnly(); requireHuman(); return Proxmox.desktopAction(VM_COMPUTER, req.body?.action, req.body ?? {}); });
+route('GET', '/api/computer/desktop', async () => { vmOnly(); return Proxmox.desktopAction(VM_COMPUTER, 'screenshot'); });
 route('POST', '/api/computer/services/:name/:action', async (req) => {
+  vmOnly(); throw new HttpError(501, 'Host services are not accessible from the VM computer');
   const { name, action } = req.params;
   if (action === 'start') services.start(name);
   else if (action === 'stop') await services.stop(name);
@@ -427,7 +451,7 @@ route('POST', '/api/files', async (req) => {
   try { return await saveUpload(req, { name: decodeURIComponent(name), dir: req.query.get('dir') ?? undefined, from: req.query.get('from') ?? undefined }); }
   catch (e) { throw new HttpError(413, (e as Error).message); }
 }, { raw: true });
-route('GET', '/api/computer/download', (req, res) => {
+route('GET', '/api/computer/download', (req, res) => { vmOnly(); throw new HttpError(501, 'Host file downloads disabled: export from VM instead');
   const p = req.query.get('path') ?? '';
   const abs = files.resolveWs(p);
   if (!fs.existsSync(abs) || fs.statSync(abs).isDirectory()) throw new HttpError(404, 'No such file');
