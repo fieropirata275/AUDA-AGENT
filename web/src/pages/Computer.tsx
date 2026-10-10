@@ -58,7 +58,7 @@ export function Computer() {
         <Button size="sm" onClick={() => { const text=prompt('Type text into VM'); if(text) void desktop('type',{text}); }}>Type text</Button></div>
     </div>
     <div className="card stack" style={{gap:10}}><strong>VM terminal</strong>
-      <form className="row" onSubmit={command}><input className="input grow" value={cmd} onChange={e=>setCmd(e.target.value)} placeholder="Command inside guest VM" /><Button submit busy={busy} disabled={vm?.controller !== 'human'}>Run in VM</Button></form>
+      <form className="row" onSubmit={command}><input className="input grow" value={cmd} onChange={e=>setCmd(e.target.value)} placeholder="Command inside guest VM" /><Button type="submit" busy={busy} disabled={vm?.controller !== 'human'}>Run in VM</Button></form>
       <pre className="raw mono" style={{whiteSpace:'pre-wrap'}}>{output}</pre>
     </div>
     <div className="card stack" style={{gap:10}}><div className="row"><strong>VM files · /home/auda</strong><Button size="sm" onClick={() => void list()}>List files</Button></div>
