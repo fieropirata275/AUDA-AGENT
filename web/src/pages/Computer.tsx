@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { api, post } from '../lib/api';
 import { Button } from '../components/controls';
 
-interface VmView { name: string; state: string; controller: 'human'|'auda'; driver: { label: string } }
+interface VmView { name: string; state: string; error?: string | null; controller: 'human'|'auda'; driver: { label: string } }
 export function Computer() {
   const [vm, setVm] = useState<VmView | null>(null);
   const [error, setError] = useState('');
@@ -13,7 +13,7 @@ export function Computer() {
   const [screen, setScreen] = useState('');
   const [busy, setBusy] = useState(false);
   const refresh = async () => {
-    try { setVm(await api('/api/computer')); setError(''); } catch (e) { setError((e as Error).message); }
+    try { const result = await api<VmView>('/api/computer'); setVm(result); setError(result.error ?? ''); } catch (e) { setError((e as Error).message); }
   };
   useEffect(() => { void refresh(); }, []);
   useEffect(() => { const stream = new EventSource('/api/computer/desktop/stream'); stream.addEventListener('frame', (ev) => { try { const f = JSON.parse((ev as MessageEvent).data); if (f.pngBase64) setScreen('data:image/png;base64,' + f.pngBase64); } catch {} }); stream.addEventListener('error', () => {}); return () => stream.close(); }, []);
@@ -47,8 +47,8 @@ export function Computer() {
       </div>
     </div>
     {error && <div className="card" role="alert" style={{color:'var(--problem)'}}>{error}</div>}
-    <div className="card"><strong>{vm?.name ?? 'Proxmox connection required'}</strong>
-      <p className="small muted">{vm?.driver?.label ?? 'Connect Proxmox in Connections first.'} · {vm?.state ?? 'unavailable'}</p>
+    <div className="card"><strong>{vm?.name ?? 'Checking Proxmox computer…'}</strong>
+      <p className="small muted">{vm?.driver?.label ?? 'Checking connection…'} · {vm?.state ?? 'unavailable'}</p>
     </div>
     <div className="card stack" style={{gap:10}}>
       <div className="row"><strong>VM desktop</strong><Button size="sm" onClick={() => void screenshot()}>Refresh screenshot</Button></div>
