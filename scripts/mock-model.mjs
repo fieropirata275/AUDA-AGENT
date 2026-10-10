@@ -8,7 +8,10 @@ let n = 0;
 const tu = (name, input) => ({ type: 'tool_use', id: `toolu_${Date.now().toString(36)}_${n++}`, name, input });
 const text = (t) => ({ type: 'text', text: t });
 
+let reviewedSite = 0;
 export async function respond(a) {
+  // A local reasoning model that spends its first reply thinking: empty text, then a proper verdict.
+  if (a.purpose === 'verification' && a.prompt.includes('Build a website') && reviewedSite++ === 0) return { text: '' };
   if (a.purpose === 'verification') {
     if (a.prompt.includes('Build a word counter') && !a.prompt.includes('VERIFIED')) {
       return { text: '{"verdict":"fail","issues":["There is no evidence the counter was run against real input"],"summary":"Claimed, not shown"}' };
@@ -69,6 +72,22 @@ export async function respond(a) {
     const val = /(\d+) ?Nm/.exec(kb)?.[0];
     if (turn === 0) return { content: [tu('learn', { title: 'Torque table lives in the manual', lesson: 'Fastener torque values are in the maintenance manual, section 4.' })] };
     return { content: [text(val ? `The M8 flange bolts take ${val} according to the maintenance manual, tightened in a star pattern with calibrated torque wrench.` : 'I could not find it.')] };
+  }
+
+  // A website in files, "delivered" the way local models often do it: a description pointing at the file.
+  if (title.startsWith('Build a website')) {
+    if (turn === 0) return { content: [
+      tu('write_file', { path: 'site/index.html', content: '<!doctype html><html><head><meta charset="utf-8"><title>Modern site</title><link rel="stylesheet" href="style.css"></head><body><header><img src="logo.svg" alt="logo"><h1 class="hero">Modern site</h1></header><main id="features">Features grid</main><script src="app.js"></script></body></html>' }),
+      tu('write_file', { path: 'site/style.css', content: 'body{font-family:system-ui;background:#0b1530;color:#fff}.hero{color:#f5a524}header{background:url(logo.svg) no-repeat}' }),
+      tu('write_file', { path: 'site/app.js', content: 'document.querySelector(".hero").dataset.ready = "yes";' }),
+      tu('write_file', { path: 'site/logo.svg', content: '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><circle cx="5" cy="5" r="5" fill="#f5a524"/></svg>' }),
+      tu('write_file', { path: 'site/README.md', content: '# Modern site\nOpen index.html.\n' }),
+    ] };
+    if (turn === 1) {
+      const where = /wrote (~\/[^\s"\\]+site\/index\.html)/.exec(JSON.stringify(a.messages))?.[1] ?? '~/site/index.html';
+      return { content: [tu('save_artifact', { name: 'modern-website.html', why: 'The finished website', content: `Modern Website - Clean, Minimal Design. Sections: 1. Sticky navigation 2. Hero 3. Features grid. View at: ${where}` })] };
+    }
+    return { content: [text('Built the modern website.')] };
   }
 
   // A full office job: research → spreadsheet + chart → PDF report → deck → Word → read the PDF back.

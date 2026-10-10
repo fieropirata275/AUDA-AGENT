@@ -11,7 +11,7 @@ import { getSetting, insert, json, now, q, uid, update } from '../core/db.ts';
 import { changed } from '../core/changes.ts';
 import { activity } from '../core/activity.ts';
 import { currentUserId, OWNER_ID } from '../core/context.ts';
-import { complete, hasReasoningModel } from '../models/router.ts';
+import { completeJson, hasReasoningModel } from '../models/router.ts';
 import { createTask } from '../tasks/engine.ts';
 import { Permanent } from '../tools/errors.ts';
 import { addDocument, fetchUrlText, kbStats, DEFAULT_RANKER, type Ranker } from './knowledge.ts';
@@ -106,12 +106,12 @@ export async function draftFromDescription(describe: string): Promise<Partial<Te
   if (!text) throw new Permanent('Describe what the agent should do');
   if (hasReasoningModel() && getSetting('agents.draftWithModel', true)) {
     try {
-      const r = await complete({
-        role: 'utility', purpose: 'draft custom agent', maxTokens: 1500,
+      const j = await completeJson<any>({
+        role: 'utility', purpose: 'draft custom agent', maxTokens: 2500,
+        json: { name: 'agent', schema: { type: 'object', properties: { name: { type: 'string' }, emoji: { type: 'string' }, description: { type: 'string' }, instructions: { type: 'string' }, starters: { type: 'array', items: { type: 'string' } }, criteria: { type: 'string' } }, required: ['name', 'instructions'] } },
         system: 'You design specialist AI agents. Given a description, return JSON only: {"name": "2-3 word role name", "emoji": "one emoji", "description": "one sentence, what it does for the user", "instructions": "4-6 sentences: how it works, what it prioritises, what it delivers, what it must ask before doing", "starters": ["3 short example requests"], "criteria": "one sentence: what a finished task looks like"}',
         prompt: text,
       });
-      const j = JSON.parse(r.text.slice(r.text.indexOf('{'), r.text.lastIndexOf('}') + 1));
       if (j.name && j.instructions) return { name: String(j.name).slice(0, 40), emoji: String(j.emoji ?? '🤖').slice(0, 4), description: String(j.description ?? text).slice(0, 240), instructions: String(j.instructions).slice(0, 4000), starters: (j.starters ?? []).slice(0, 4).map(String), criteria: j.criteria ? String(j.criteria) : undefined };
     } catch { /* fall back to heuristics */ }
   }

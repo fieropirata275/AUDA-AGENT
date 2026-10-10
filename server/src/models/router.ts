@@ -7,7 +7,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { getSetting, insert, now, q, uid } from '../core/db.ts';
 import { resolveSecret } from '../secrets/broker.ts';
 import { log } from '../core/log.ts';
-import { chat as oaiChat } from './openai.ts';
+import { chat as oaiChat, parseModelJson, type JsonSchemaSpec } from './openai.ts';
 import { guarded } from '../connectors/runtime.ts';
 import { withHealing } from '../connectors/lmstudio-setup.ts';
 
@@ -135,6 +135,8 @@ export interface CompleteArgs {
   maxTokens?: number;
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   taskId?: string;
+  /** Ask for a JSON reply matching this schema (enforced by servers that support structured output). */
+  json?: JsonSchemaSpec;
 }
 export interface CompleteResult {
   text: string;
@@ -192,7 +194,7 @@ async function callLocal(model: string, a: CompleteArgs): Promise<CompleteResult
   if (!l?.baseUrl) throw new Error('No local model endpoint configured');
   const r = await guarded('lmstudio', () => withHealing(model, () => oaiChat(
     { baseUrl: l.baseUrl, model, apiKey: resolveSecret(l.apiKeySecret), tools: l.tools },
-    { system: a.system, messages: (a.messages ?? [{ role: 'user', content: a.prompt ?? '' }]) as any, tools: a.tools as any[], maxTokens: Math.min(a.maxTokens ?? 4096, 16_384), signal: a.signal },
+    { system: a.system, messages: (a.messages ?? [{ role: 'user', content: a.prompt ?? '' }]) as any, tools: a.tools as any[], maxTokens: Math.min(a.maxTokens ?? 4096, 16_384), signal: a.signal, json: a.json },
   )));
   record(a, { provider: 'local', model }, r.usage.input, r.usage.output, true);
   const text = r.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
@@ -204,4 +206,25 @@ function record(a: CompleteArgs, t: RoleTarget, inTok: number, outTok: number, o
   const cost = Math.round((inTok * p[0] + outTok * p[1]));  // micro-units: tokens × $/M
   insert('model_calls', { id: uid('mc'), ts: now(), role: a.role, provider: t.provider, model: t.model, input_tokens: inTok, output_tokens: outTok, cost_micro: cost, task_id: a.taskId, purpose: a.purpose, ok: ok ? 1 : 0 });
   if (a.taskId && cost) q.run('UPDATE tasks SET cost_micro = cost_micro + ? WHERE id = ?', cost, a.taskId);
+}
+
+/**
+ * A model call that must come back as JSON. Local reasoning models sometimes spend their whole budget thinking and
+ * return nothing, or wrap the object in prose; this asks for structured output, parses leniently, and retries once
+ * with more room and a plainer instruction before giving up with a clear message.
+ */
+export async function completeJson<T = any>(a: CompleteArgs & { json: JsonSchemaSpec }): Promise<T> {
+  const first = await complete(a);
+  try { return parseModelJson<T>(first.text); }
+  catch (e) {
+    if (a.signal?.aborted) throw e;
+    log.warn(`${a.purpose}: no usable JSON (${(e as Error).message}); retrying once`);
+    const again = await complete({
+      ...a, maxTokens: Math.min((a.maxTokens ?? 2000) * 2, 16_000),
+      prompt: a.prompt ? `${a.prompt}\n\nReply with the JSON object only — no reasoning, no prose, no code fences.` : a.prompt,
+      messages: a.messages ? [...a.messages, { role: 'user', content: 'Reply with the JSON object only — no reasoning, no prose, no code fences.' } as any] : a.messages,
+    });
+    try { return parseModelJson<T>(again.text); }
+    catch (e2) { throw new Error(`the model didn’t return a usable answer (${(e2 as Error).message})`); }
+  }
 }

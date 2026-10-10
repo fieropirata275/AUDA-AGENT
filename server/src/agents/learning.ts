@@ -26,7 +26,7 @@ import { on } from '../core/bus.ts';
 import { activity } from '../core/activity.ts';
 import { changed } from '../core/changes.ts';
 import { log } from '../core/log.ts';
-import { complete, hasReasoningModel } from '../models/router.ts';
+import { completeJson, hasReasoningModel } from '../models/router.ts';
 import { resolveWs } from '../computer/files.ts';
 import { addDocument, cosine, fetchUrlText, hashedEmbedding, tokens, score, DEFAULT_RANKER, FEATURES, type Ranker } from './knowledge.ts';
 import { agentConfig, getAgent, saveConfig } from './agents.ts';
@@ -149,12 +149,12 @@ export async function reflect(taskId: string) {
   const out: { title: string; text: string; kind: 'lesson' | 'skill' }[] = [];
   if (hasReasoningModel()) {
     try {
-      const r = await complete({
-        role: 'utility', purpose: 'agent reflection', taskId, maxTokens: 1200,
+      const j = await completeJson<any>({
+        role: 'utility', purpose: 'agent reflection', taskId, maxTokens: 2000,
+        json: { name: 'reflection', schema: { type: 'object', properties: { lessons: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, lesson: { type: 'string' } }, required: ['title', 'lesson'] } }, skill: { type: 'object', properties: { title: { type: 'string' }, steps: { type: 'string' } } } }, required: ['lessons'] } },
         system: `You help the agent "${a.name}" learn from finished work. Write lessons that would make the next similar task go better: specific, actionable, reusable — not a summary of this task. Return JSON only: {"lessons":[{"title":"short","lesson":"1-3 sentences"}],"skill":{"title":"short name for this kind of task","steps":"the approach that worked, as numbered steps"} | null}. At most 3 lessons; return an empty list if nothing is worth keeping.`,
         prompt: `TASK: ${t.title}\nGOAL: ${t.goal ?? ''}\nDONE WHEN: ${criteria ?? '-'}\nOUTCOME: ${t.state}\nRESULT: ${(t.result_summary ?? t.diagnosis ?? t.error ?? '').slice(0, 3000)}\nREVIEW: ${ver ? `${ver.verdict} — ${(ver.issues ?? []).join('; ')}` : '-'}\nFEEDBACK: ${fb.map((f) => `${f.rating > 0 ? '+' : '-'} ${f.comment ?? ''}`).join(' | ') || '-'}\nTOOLS USED IN ORDER: ${seq.join(' → ') || '-'}`,
       });
-      const j = JSON.parse(r.text.slice(r.text.indexOf('{'), r.text.lastIndexOf('}') + 1));
       for (const l of (j.lessons ?? []).slice(0, 3)) if (l?.title && l?.lesson) out.push({ title: String(l.title).slice(0, 120), text: String(l.lesson).slice(0, 1200), kind: 'lesson' });
       if (t.state === 'COMPLETED' && j.skill?.title && j.skill?.steps) out.push({ title: String(j.skill.title).slice(0, 120), text: String(j.skill.steps).slice(0, 2000), kind: 'skill' });
     } catch (e) { log.warn('reflection via model failed; using heuristics', String(e)); }
