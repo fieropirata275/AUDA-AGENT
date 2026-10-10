@@ -4,6 +4,7 @@ import type { Task } from '../lib/types';
 import { fm } from '../motion/spring';
 import { TaskGlyph, TASK_LABEL } from './glyphs';
 import { ago, until } from '../lib/time';
+import { plainText } from './Markdown';
 import { openSheet } from './ui';
 
 export function StepPips({ task }: { task: Task }) {
@@ -52,7 +53,7 @@ export function TaskCard({ task, compact }: { task: Task; compact?: boolean }) {
         </div>
         {!compact && (
           <motion.div key={task.nowLine} className="task-now" initial={{ opacity: 0, y: 3 }} animate={{ opacity: 1, y: 0 }} transition={fm.settle}>
-            {done ? task.result : task.state === 'FAILED' ? task.error : task.nowLine}
+            {done ? plainText(task.result ?? '') : task.state === 'FAILED' ? task.error : task.nowLine}
           </motion.div>
         )}
         <div className="task-meta">

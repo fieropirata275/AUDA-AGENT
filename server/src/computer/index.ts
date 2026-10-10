@@ -82,7 +82,12 @@ function registerComputerTools() {
   });
   registerTool('service.restart', async (i) => { needsComputer(); terminal.note(`restarting ${i.service}`); return services.restart(i.service); });
   registerTool('service.configure', async (i) => { needsComputer(); terminal.note(`${i.service}: set ${i.key}=${i.value}`); return services.configure(i.service, i.key, i.value); });
-  registerTool('browser.read', async (i) => { needsComputer(); return browser.readPage(i.url, i.focus); });
+  registerTool('browser.read', async (i) => {
+    needsComputer();
+    if (i.screenshot) return { png: (await browser.screenshot()).toString('base64'), url: browser.status().url };
+    if (i.performance) return browser.measurePerformance(i.url, !!i.mobile);
+    return browser.readPage(i.url, i.focus);
+  });
   // Agents act with { action, target, value }; the UI's human control sends raw input events.
   registerTool('browser.interact', async (i) => { needsComputer(); if (i.action) return browser.act(i); await browser.humanInput(i); return { ok: true }; });
   registerTool('browser.submit', async (i) => { needsComputer(); return browser.act(i); });

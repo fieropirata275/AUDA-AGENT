@@ -74,6 +74,14 @@ export async function respond(a) {
     return { content: [text(val ? `The M8 flange bolts take ${val} according to the maintenance manual, tightened in a star pattern with calibrated torque wrench.` : 'I could not find it.')] };
   }
 
+  // Chat runs: a plain question answered in Markdown, a follow-up that needs the conversation, and Python that makes a file.
+  if (title.startsWith('When does the next iPhone')) return { content: [text('## Next iPhone\n\n| Model | Expected |\n|---|---|\n| iPhone 19 | **September** |\n\nApple usually announces in early September.')] };
+  if (title.startsWith('How much will it cost')) return { content: [text(first.includes('iPhone 19') ? 'The iPhone 19 should start around **$799**.' : 'Which product do you mean?')] };
+  if (title.startsWith('Make a CSV of squares with Python')) {
+    if (turn === 0) return { content: [tu('run_python', { code: "with open('squares.csv', 'w') as f:\n    f.write('n,square\\n')\n    for n in range(1, 6): f.write(f'{n},{n*n}\\n')\nprint('ok')", why: 'Writing the squares table with Python' })] };
+    return { content: [text(`Here is the table of squares. ${lastText.includes('squares.csv') ? '' : '(not attached!)'}`)] };
+  }
+
   // A website in files, "delivered" the way local models often do it: a description pointing at the file.
   if (title.startsWith('Build a website')) {
     if (turn === 0) return { content: [
