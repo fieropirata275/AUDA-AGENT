@@ -161,6 +161,11 @@ export async function parkAgentVm(agentId: string) {
   return power(agentId, 'suspend');
 }
 export function isEnabled() { return Boolean(cfg()); }
+export function computerVmInfo(agentId: string) {
+  const vm = registry()[validAgent(agentId)];
+  return { connected: isEnabled(), vm: vm ?? null };
+}
+
 
 /** Serialized per-agent VM operations. Works across simultaneous task turns in this
  * process. A database/cluster lease is required before multi-core deployments.
