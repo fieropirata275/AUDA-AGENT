@@ -28,7 +28,7 @@ export const CATALOG: ConnectorKind[] = [
   { kind: 'gmail', name: 'Gmail', description: 'Read mail, draft replies; sending would always ask.', capabilities: ['email.send'], available: false },
   { kind: 'calendar', name: 'Google Calendar', description: 'Know your schedule; propose events.', capabilities: [], available: false },
   { kind: 'slack', name: 'Slack', description: 'A channel into the same AUDA.', capabilities: ['message.send'], available: false },
-  { kind: 'proxmox', name: 'Proxmox', description: 'Nodes and VMs; restarts would ask.', capabilities: [], available: false },
+  { kind: 'proxmox', name: 'Proxmox', description: 'Dedicated agent VMs from existing templates, with resume and suspend.', capabilities: [], available: true, setup: 'endpoint' },
   { kind: 'homeassistant', name: 'Home Assistant', description: 'Sensors as triggers; devices as actions.', capabilities: [], available: false },
 ];
 
