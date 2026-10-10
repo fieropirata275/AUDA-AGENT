@@ -236,3 +236,40 @@ export async function desktopAction(agentId: string, action: 'screenshot'|'click
   if (r.code) throw new Error(r.stderr || 'Desktop is unavailable: install a graphical session, xdotool and ImageMagick');
   return action === 'screenshot' ? { pngBase64: r.stdout.trim() } : { ok: true };
 }
+
+/** Browser is started and controlled within the guest's X11 desktop, never on AUDA host.
+ * Requires chromium, xdotool and ImageMagick in the template.
+ */
+const shellQuote = (v: string) => "'" + v.replace(/'/g, "'\\''") + "'";
+export async function guestBrowser(agentId: string, request: {
+ action: 'open'|'read'|'click'|'type'|'press'|'scroll'|'screenshot';
+ url?: string; target?: string; value?: string; x?: number; y?: number;
+}) {
+ const action = request.action;
+ if (action === 'open' || action === 'read') {
+   if (request.url && !/^https?:\/\//i.test(request.url)) throw new Error('Browser URL must be HTTP(S)');
+   if (request.url) {
+     const u = new URL(request.url);
+     if (!['http:','https:'].includes(u.protocol)) throw new Error('Unsupported browser protocol');
+     const cmd = 'DISPLAY=:0 chromium --no-first-run --new-window ' + shellQuote(u.toString()) + ' >/dev/null 2>&1 &';
+     const r = await runInVm(agentId,cmd);
+     if (r.code) throw new Error(r.stderr);
+   }
+   const pageUrl = request.url ?? 'about:blank';
+   // Text retrieval runs in the guest. This does not impersonate the rendered DOM.
+   const text = request.url ? await runInVm(agentId,'curl -Ls --max-time 20 ' + shellQuote(pageUrl) + ' | sed -e "s/<[^>]*>/ /g" | head -c 50000') : null;
+   return { url: pageUrl, title: pageUrl, text: text?.stdout ?? '', links: [], did: action };
+ }
+ if (action === 'click') {
+   if (request.x === undefined || request.y === undefined) throw new Error('Browser click needs x and y screen coordinates');
+   return desktopAction(agentId,'click',{x:request.x,y:request.y});
+ }
+ if (action === 'type') return desktopAction(agentId,'type',{text:request.value ?? ''});
+ if (action === 'press') return desktopAction(agentId,'key',{key:request.value ?? 'Return'});
+ if (action === 'scroll') {
+   const r = await runInVm(agentId,'DISPLAY=:0 xdotool click ' + (request.value === 'up' ? '4' : '5'));
+   if (r.code) throw new Error(r.stderr);
+   return {ok:true};
+ }
+ return desktopAction(agentId,'screenshot');
+}
