@@ -64,6 +64,21 @@ function validAgent(agentId: string) {
   if (!/^[a-zA-Z0-9_-]{1,80}$/.test(agentId)) throw new Error('Invalid agent ID');
   return agentId;
 }
+/** Do not hand a still-cloning VM to an agent. Proxmox returns UPIDs for async operations. */
+export async function awaitTask(c: ProxmoxConfig, node: string, upid: string, deadlineMs = 180_000) {
+  if (typeof upid !== 'string' || !upid.startsWith('UPID:')) throw new Error('Expected Proxmox UPID for asynchronous operation');
+  const route = `/nodes/${encodeURIComponent(node)}/tasks/${encodeURIComponent(upid)}/status`;
+  const started = Date.now();
+  while (Date.now() - started < deadlineMs) {
+    const task = await request<{ status: string; exitstatus?: string }>(c, 'GET', route);
+    if (task.status === 'stopped') {
+      if (task.exitstatus !== 'OK') throw new Error(`Proxmox task failed: ${task.exitstatus ?? 'unknown'}`);
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 1500));
+  }
+  throw new Error('Proxmox task did not finish before the deadline; check the Proxmox task log before retrying');
+}
 export async function provision(spec: VmSpec): Promise<AgentVm> {
   const c = requireConfig(), id = validAgent(spec.agentId);
   const saved = registry()[id]; if (saved) return saved;
@@ -73,9 +88,10 @@ export async function provision(spec: VmSpec): Promise<AgentVm> {
   const vmid = Number(next);
   if (!Number.isInteger(vmid) || vmid <= 0) throw new Error('Proxmox returned an invalid VMID');
   // Clone from an existing admin-prepared QEMU template; Proxmox does not install the guest OS.
-  await request(c, 'POST', `/nodes/${encodeURIComponent(c.node)}/qemu/${c.template}/clone`, {
+  const upid = await request<string>(c, 'POST', `/nodes/${encodeURIComponent(c.node)}/qemu/${c.template}/clone`, {
     newid: vmid, name: (spec.name ?? `auda-${id}`).replace(/[^a-zA-Z0-9-]/g, '-').slice(0, 60), full: 1,
   });
+  await awaitTask(c, c.node, upid);
   const vm: AgentVm = { agentId: id, vmid, node: c.node, state: 'provisioned' };
   const r = registry(); r[id] = vm; commit(r);
   // Proxmox cloning can be asynchronous; starting should only occur after task completion.
@@ -84,7 +100,8 @@ export async function provision(spec: VmSpec): Promise<AgentVm> {
 export async function power(agentId: string, action: 'start'|'suspend'|'resume') {
   const c = requireConfig(), id = validAgent(agentId), r = registry(), vm = r[id];
   if (!vm) throw new Error('No VM assigned to this agent');
-  await request(c, 'POST', `/nodes/${encodeURIComponent(vm.node)}/qemu/${vm.vmid}/status/${action}`);
+  const upid = await request<string>(c, 'POST', `/nodes/${encodeURIComponent(vm.node)}/qemu/${vm.vmid}/status/${action}`);
+  await awaitTask(c, vm.node, upid);
   vm.state = action === 'suspend' ? 'suspended' : 'running'; commit(r);
   return vm;
 }
