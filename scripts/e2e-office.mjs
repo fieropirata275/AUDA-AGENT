@@ -39,6 +39,7 @@ const boot = () => {
   core.stdout.on('data', (d) => { logs += d; }); core.stderr.on('data', (d) => { logs += d; });
 };
 const api = async (p, body) => { const r = await fetch(BASE + p, { method: body ? 'POST' : 'GET', headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined }); const j = await r.json(); if (!r.ok) throw new Error(`${p}: ${j.error}`); return j; };
+const send = async (method, p, body) => { const r = await fetch(BASE + p, { method, headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); const j = await r.json(); if (!r.ok) throw new Error(`${method} ${p}: ${j.error}`); return j; };
 const raw = (id) => fetch(`${BASE}/api/artifacts/${id}/raw`);
 
 let failed = false;
@@ -107,6 +108,44 @@ try {
   must(siteArts.some((a) => a.name === 'README.md') && !siteArts.some((a) => a.name === 'style.css' || a.name === 'app.js'), `written files delivered, inlined assets not duplicated: ${siteArts.map((a) => a.name).join(', ')}`);
   must(/Files: /.test(site.result), `the answer lists the delivered files: ${site.result}`);
   step(`website: a description pointing at ~/…/site/index.html became the real page (CSS, JS and images inlined); README.md delivered on finish; review recovered from an empty reply (${site.verification.verdict})`);
+
+  // Chat like ChatGPT: each message is a live run; the reply is Markdown, follow-ups see the conversation, files come back in the reply.
+  const replyTo = async (cid, mid) => {
+    for (let i = 0; i < 120; i++) {
+      const m = (await api(`/api/conversations/${cid}/messages`)).find((x) => x.id === mid);
+      const run = m?.objects.find((o) => o.type === 'run');
+      if (m && run && m.content) return { m, run: await api(`/api/tasks/${run.id}`) };
+      await sleep(500);
+    }
+    throw new Error('no chat reply');
+  };
+  const chat1 = await api('/api/chat', { text: 'When does the next iPhone come out?' });
+  const cid = chat1.conversationId;
+  const replyId = (await api(`/api/conversations/${cid}/messages`)).find((m) => m.role === 'auda').id;
+  const a1 = await replyTo(cid, replyId);
+  must(/\| iPhone 19 \| \*\*September\*\* \|/.test(a1.m.content) && a1.run.state === 'COMPLETED' && !a1.run.verification, `a chat answer is the Markdown reply, without a review: ${a1.m.content}`);
+  await api('/api/chat', { text: 'How much will it cost?', conversationId: cid });
+  const r2 = (await api(`/api/conversations/${cid}/messages`)).filter((m) => m.role === 'auda').at(-1);
+  const a2 = await replyTo(cid, r2.id);
+  must(/\$799/.test(a2.m.content), `the follow-up saw the conversation: ${a2.m.content}`);
+  await api('/api/chat', { text: 'Make a CSV of squares with Python', conversationId: cid });
+  const r3 = (await api(`/api/conversations/${cid}/messages`)).filter((m) => m.role === 'auda').at(-1);
+  const a3 = await replyTo(cid, r3.id);
+  const att = a3.m.objects.filter((o) => o.type === 'artifact');
+  const csv = (await api('/api/bootstrap')).artifacts.find((a) => a.id === att[0]?.id);
+  must(csv?.name === 'squares.csv' && !/not attached/.test(a3.m.content), `the file Python made is attached to the reply: ${JSON.stringify(a3.m.objects)} ${a3.m.content}`);
+  must((await (await raw(csv.id)).text()).includes('5,25'), 'the CSV content');
+  const steps = (await api('/api/bootstrap')).activity.filter((x) => x.taskId === a3.run.id && x.kind === 'act').map((x) => x.title);
+  must(steps.includes('Writing the squares table with Python'), `what it is doing is shown as it works: ${steps.join(' | ')}`);
+  step(`chat: Markdown answer, follow-up with context (“${a2.m.content}”), Python's squares.csv attached to the reply, live step “${steps.find((x) => /Python/.test(x))}”`);
+
+  await send('PATCH', `/api/conversations/${cid}`, { title: 'iPhone questions', pinned: true });
+  let conv = (await api('/api/bootstrap')).conversations.find((c) => c.id === cid);
+  must(conv.title === 'iPhone questions' && conv.pinned === 1, `rename + pin: ${JSON.stringify(conv)}`);
+  await send('DELETE', `/api/conversations/${cid}`);
+  conv = (await api('/api/bootstrap')).conversations.find((c) => c.id === cid);
+  must(!conv && (await api(`/api/conversations/${cid}/messages`)).length === 0, 'the conversation and its messages are deleted');
+  step('conversations: renamed, pinned, deleted');
 
   console.log('\n  office work (research, PDF, slides, Word, Excel, charts): PASS\n');
 } catch (e) {
