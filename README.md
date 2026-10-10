@@ -70,9 +70,10 @@ reports, reminders, rules and memory. Connect Claude to unlock open-ended work.
 
 ## Quick start
 
-Requires Node.js 22.12+ (22 or 24 LTS recommended) and, for AUDA's browser
-and PDF making, Chrome, Chromium or Edge. AUDA finds an installed one on its own.
-It runs on Windows, macOS and Linux.
+Requires Node.js 22.12+ (22 or 24 LTS recommended). AUDA's browser (and PDF
+making) uses an installed Chrome, Chromium or Edge. If there's none, AUDA
+downloads its own Chromium once in the background (`AUDA_BROWSER_AUTOINSTALL=0`
+turns that off). It runs on Windows, macOS and Linux.
 
 ```bash
 npm install
@@ -175,7 +176,9 @@ Live state: **Settings → Reliability**.
 | `AUDA_TOKEN` | — | Require a token for the UI and API |
 | `AUDA_MASTER_KEY` | generated | Key for the encrypted secret store |
 | `ANTHROPIC_API_KEY` | — | Optional; Claude can also be connected in the UI |
-| `AUDA_CHROMIUM` | auto-detected | Chromium executable for AUDA's browser |
+| `AUDA_CHROMIUM` | auto-detected | Chrome/Chromium/Edge executable for AUDA's browser (downloaded once if none is found) |
+| `AUDA_BROWSER_AUTOINSTALL` | on | Set `0` to never download a Chromium |
+| `AUDA_BROWSER_LOCALE` | system | Language AUDA's browser presents to sites (e.g. `es-ES`) |
 | `AUDA_COMPUTER_DRIVER` | `local` | `local` · `docker` · `ssh` |
 | `LMSTUDIO_URL` | auto-detected | LM Studio server address(es), comma-separated |
 | `AUDA_LMSTUDIO_AUTO` | on | Set `0` to stop AUDA setting up LM Studio by itself on first run |

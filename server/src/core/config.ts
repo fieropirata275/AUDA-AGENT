@@ -23,7 +23,7 @@ export const config = {
 };
 
 /** A Chromium-family browser for AUDA's computer and PDF rendering: Playwright's, then Chrome, Chromium or Edge. */
-function findChromium(): string | undefined {
+export function findChromium(): string | undefined {
   const home = os.homedir();
   const env = (k: string) => process.env[k] ?? '';
   const pwBases = [process.env.PLAYWRIGHT_BROWSERS_PATH, '/opt/pw-browsers', path.join(home, '.cache', 'ms-playwright'),
@@ -32,7 +32,10 @@ function findChromium(): string | undefined {
   for (const base of pwBases) {
     try {
       for (const d of fs.readdirSync(base).filter((x) => /^chromium-\d+$/.test(x)).sort().reverse()) {
-        candidates.push(path.join(base, d, 'chrome-linux', 'chrome'), path.join(base, d, 'chrome-win', 'chrome.exe'), path.join(base, d, 'chrome-win64', 'chrome.exe'),
+        const cft = path.join('Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'); // Playwright ≥1.5x ships Chrome for Testing
+        candidates.push(path.join(base, d, 'chrome-linux64', 'chrome'), path.join(base, d, 'chrome-linux', 'chrome'),
+          path.join(base, d, 'chrome-win64', 'chrome.exe'), path.join(base, d, 'chrome-win', 'chrome.exe'),
+          path.join(base, d, 'chrome-mac-arm64', cft), path.join(base, d, 'chrome-mac-x64', cft),
           path.join(base, d, 'chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium'), path.join(base, d, 'chrome-mac-arm64', 'Chromium.app', 'Contents', 'MacOS', 'Chromium'));
       }
     } catch { /* no playwright browsers here */ }
