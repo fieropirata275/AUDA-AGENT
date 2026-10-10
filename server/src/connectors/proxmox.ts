@@ -1,3 +1,4 @@
+import https from 'node:https';
 /** Proxmox VE connection and agent VM lifecycle.
  * Credentials remain in AUDA's encrypted secret broker, never in model context.
  * Only owner/admin setup endpoints should call connect().
@@ -6,37 +7,54 @@ import { q, getSetting, setSetting, now } from '../core/db.ts';
 import { putSecret, resolveSecret, deleteSecret } from '../secrets/broker.ts';
 import { ensureConnector, setConnector } from './runtime.ts';
 
-export interface ProxmoxConfig { url: string; tokenId: string; secretRef: string; node: string; template: number; storage?: string; bridge?: string; }
+export interface ProxmoxConfig { url: string; tokenId: string; secretRef: string; node: string; template: number; storage?: string; bridge?: string; insecureTls?: boolean; }
 export interface VmSpec { agentId: string; name?: string; cores?: number; memoryMiB?: number; }
 export interface AgentVm { agentId: string; vmid: number; node: string; state: 'provisioned' | 'running' | 'suspended'; }
 const KEY = 'proxmox.agentVms';
 const cfg = (): ProxmoxConfig | null => getSetting<ProxmoxConfig | null>('proxmox.config', null);
 const registry = (): Record<string, AgentVm> => getSetting<Record<string, AgentVm>>(KEY, {});
 const commit = (r: Record<string, AgentVm>) => setSetting(KEY, r);
-function endpoint(raw: string) {
+function endpoint(raw: string, insecureTls = false) {
   const u = new URL(raw.trim());
-  if (u.protocol !== 'https:' || u.username || u.password || u.search || u.hash) throw new Error('Proxmox requires a clean HTTPS server URL');
+  if (!['https:', 'http:'].includes(u.protocol) || u.username || u.password || u.search || u.hash) throw new Error('Enter a clean HTTP(S) Proxmox URL');
+  if (u.protocol === 'http:' && !insecureTls) throw new Error('HTTP requires explicitly enabling the local insecure connection option');
   return u.origin + '/api2/json';
+}
+/** TLS exception is isolated to this one Proxmox endpoint. Never changes global Node TLS settings. */
+async function insecureLocalFetch(url: string, init: {method: string; headers: Record<string,string>; body?: URLSearchParams; signal: AbortSignal}): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, { method: init.method, headers: init.headers, rejectUnauthorized: false, timeout: 20_000 }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.on('end', () => resolve(new Response(Buffer.concat(chunks), {status: res.statusCode ?? 500, headers: res.headers as Record<string,string>})));
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.on('timeout', () => req.destroy(new Error('Proxmox connection timed out')));
+    init.signal.addEventListener('abort', () => req.destroy(new Error('Proxmox connection cancelled')), {once: true});
+    req.end(init.body?.toString());
+  });
 }
 export async function request<T = any>(config: ProxmoxConfig, method: 'GET' | 'POST', route: string, fields?: Record<string, string | number>) {
   const secret = resolveSecret(config.secretRef);
   if (!secret) throw new Error('Proxmox token is missing: reconnect');
-  const url = endpoint(config.url) + route;
-  const response = await fetch(url, {
+  const url = endpoint(config.url, config.insecureTls) + route;
+  const params = {
     method, headers: { Authorization: `PVEAPIToken=${config.tokenId}=${secret}`, ...(fields ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}) },
     body: fields ? new URLSearchParams(Object.entries(fields).map(([k,v]) => [k, String(v)])) : undefined,
     signal: AbortSignal.timeout(20_000),
-  });
+  };
+  const response = config.insecureTls && url.startsWith('https:') ? await insecureLocalFetch(url, params) : await fetch(url, params);
   const payload = await response.json().catch(() => ({})) as { data?: T; errors?: any; message?: string };
   if (!response.ok) throw new Error(`Proxmox ${response.status}: ${JSON.stringify(payload.errors ?? payload.message ?? 'request failed')}`);
   return payload.data as T;
 }
-export async function connect(input: { url: string; tokenId: string; tokenSecret: string }) {
-  endpoint(input.url);
+export async function connect(input: { url: string; tokenId: string; tokenSecret: string; insecureTls?: boolean }) {
+  endpoint(input.url, Boolean(input.insecureTls));
   if (!/^\S+@\S+!.+/.test(input.tokenId) || !input.tokenSecret.trim()) throw new Error('Provide a Proxmox API token ID (user@realm!token) and secret');
   const existing = cfg();
   const secretRef = putSecret('proxmox-api-token', input.tokenSecret.trim());
-  const c: ProxmoxConfig = { url: input.url.trim(), tokenId: input.tokenId.trim(), secretRef, node: '', template: 0 };
+  const c: ProxmoxConfig = { url: input.url.trim(), tokenId: input.tokenId.trim(), secretRef, node: '', template: 0, insecureTls: Boolean(input.insecureTls) };
   try {
     const nodes = await request<Array<{node: string; status: string}>>(c, 'GET', '/nodes');
     const node = nodes.find(n => n.status === 'online')?.node;
