@@ -237,39 +237,54 @@ export async function desktopAction(agentId: string, action: 'screenshot'|'click
   return action === 'screenshot' ? { pngBase64: r.stdout.trim() } : { ok: true };
 }
 
-/** Browser is started and controlled within the guest's X11 desktop, never on AUDA host.
- * Requires chromium, xdotool and ImageMagick in the template.
+/** DOM automation runs Playwright INSIDE the guest, not in AUDA's process.
+ * Template prerequisite: node, playwright, Chromium and X11 at DISPLAY=:0.
+ * Serialized by runInVm; browser profile lives on the VM disk.
  */
-const shellQuote = (v: string) => "'" + v.replace(/'/g, "'\\''") + "'";
 export async function guestBrowser(agentId: string, request: {
  action: 'open'|'read'|'click'|'type'|'press'|'scroll'|'screenshot';
  url?: string; target?: string; value?: string; x?: number; y?: number;
 }) {
- const action = request.action;
- if (action === 'open' || action === 'read') {
-   if (request.url && !/^https?:\/\//i.test(request.url)) throw new Error('Browser URL must be HTTP(S)');
-   if (request.url) {
-     const u = new URL(request.url);
-     if (!['http:','https:'].includes(u.protocol)) throw new Error('Unsupported browser protocol');
-     const cmd = 'DISPLAY=:0 chromium --no-first-run --new-window ' + shellQuote(u.toString()) + ' >/dev/null 2>&1 &';
-     const r = await runInVm(agentId,cmd);
-     if (r.code) throw new Error(r.stderr);
-   }
-   const pageUrl = request.url ?? 'about:blank';
-   // Text retrieval runs in the guest. This does not impersonate the rendered DOM.
-   const text = request.url ? await runInVm(agentId,'curl -Ls --max-time 20 ' + shellQuote(pageUrl) + ' | sed -e "s/<[^>]*>/ /g" | head -c 50000') : null;
-   return { url: pageUrl, title: pageUrl, text: text?.stdout ?? '', links: [], did: action };
- }
- if (action === 'click') {
-   if (request.x === undefined || request.y === undefined) throw new Error('Browser click needs x and y screen coordinates');
-   return desktopAction(agentId,'click',{x:request.x,y:request.y});
- }
- if (action === 'type') return desktopAction(agentId,'type',{text:request.value ?? ''});
- if (action === 'press') return desktopAction(agentId,'key',{key:request.value ?? 'Return'});
- if (action === 'scroll') {
-   const r = await runInVm(agentId,'DISPLAY=:0 xdotool click ' + (request.value === 'up' ? '4' : '5'));
-   if (r.code) throw new Error(r.stderr);
-   return {ok:true};
- }
- return desktopAction(agentId,'screenshot');
+ if (request.url && !/^https?:\/\//i.test(request.url)) throw new Error('Browser URL must be HTTP(S)');
+ const payload = Buffer.from(JSON.stringify(request)).toString('base64');
+ const script = `
+const { chromium } = require('playwright');
+const fs = require('fs');
+(async()=>{
+ const opts = JSON.parse(Buffer.from(process.env.AUDA_BROWSER_ACTION,'base64').toString('utf8'));
+ const context = await chromium.launchPersistentContext('/home/auda/.auda-browser', {
+  headless:false, executablePath: process.env.AUDA_CHROMIUM || '/usr/bin/chromium',
+  viewport:{width:1280,height:800}, args:['--no-first-run']
+ });
+ try {
+  const page=context.pages()[0] || await context.newPage();
+  if(opts.url) await page.goto(opts.url,{waitUntil:'domcontentloaded',timeout:30000});
+  const a=opts.action;
+  let did=a;
+  const target=String(opts.target || '');
+  const locator=target.startsWith('css:')?page.locator(target.slice(4)):
+    target.startsWith('role:')?page.getByRole(target.slice(5).split(':')[0],{name:target.slice(5).split(':').slice(1).join(':')}):
+    page.getByText(target,{exact:false}).first();
+  if(a==='click') { if(opts.x!=null && opts.y!=null) await page.mouse.click(opts.x,opts.y); else if(target) await locator.click(); else throw Error('click needs target or coordinates'); }
+  if(a==='type') { if(target) await (target.startsWith('css:')?page.locator(target.slice(4)):page.getByLabel(target,{exact:false})).fill(String(opts.value||'')); else await page.keyboard.insertText(String(opts.value||'')); }
+  if(a==='press') await page.keyboard.press(String(opts.value||'Enter'));
+  if(a==='scroll') await page.mouse.wheel(0,opts.value==='up'?-600:600);
+  if(a==='screenshot') {
+   const data=await page.screenshot({type:'png'});
+   process.stdout.write(JSON.stringify({url:page.url(),pngBase64:data.toString('base64'),did}));
+  } else {
+   const title=await page.title();
+   const text=(await page.locator('body').innerText().catch(()=>'')).slice(0,50000);
+   const links=await page.locator('a[href]').evaluateAll(as=>as.slice(0,70).map(a=>({text:(a.textContent||'').trim().slice(0,100),url:a.href})));
+   process.stdout.write(JSON.stringify({url:page.url(),title,text,links,did}));
+  }
+ } finally { await context.close(); }
+})().catch(e=>{process.stderr.write(String(e.stack||e));process.exitCode=1;});
+`;
+ const script64=Buffer.from(script).toString('base64');
+ const command='AUDA_BROWSER_ACTION='+shellValue(payload)+' DISPLAY=:0 node -e "eval(Buffer.from(\''+script64+'\',\'base64\').toString())"';
+ const r=await runInVm(agentId,command,90_000);
+ if(r.code!==0) throw new Error('Guest browser: '+r.stderr.slice(0,2000));
+ try {return JSON.parse(r.stdout);} catch {throw new Error('Guest browser returned invalid JSON: '+r.stdout.slice(0,500));}
 }
+const shellValue=(s:string)=>"'"+s.replace(/'/g,"'\\''")+"'";
