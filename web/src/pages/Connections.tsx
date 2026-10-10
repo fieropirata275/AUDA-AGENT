@@ -1,5 +1,5 @@
 /** Connections are pieces of AUDA's environment, each with explicit permissions. */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useStore } from '../lib/store';
 import { api, post } from '../lib/api';
@@ -214,6 +214,7 @@ function ProxmoxSetup() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ connected: boolean; node?: string; template?: number } | null>(null);
   const [error, setError] = useState('');
+  useEffect(() => { let alive = true; api('/api/proxmox/status').then(r => { if (alive && r.connected) setResult(r); }).catch(() => {}); return () => { alive = false; }; }, []);
   const connect = async () => {
     setBusy(true); setError('');
     try {
