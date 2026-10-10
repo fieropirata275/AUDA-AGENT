@@ -294,7 +294,7 @@ async function runTask(id: string, fromState: string) {
     if (Proxmox.isEnabled() && finalTask?.agent_id && TERMINAL.includes(finalTask.state)) {
       const other = q.get("SELECT COUNT(*) n FROM tasks WHERE agent_id = ? AND id != ? AND state = 'RUNNING'", finalTask.agent_id, id)?.n ?? 0;
       if (!other) {
-        try { await Proxmox.parkAgentVm(finalTask.agent_id); }
+        try { await Proxmox.parkIfIdle(finalTask.agent_id); }
         catch (e) { log.warn('Could not suspend agent VM', String(e)); }
       }
     }
