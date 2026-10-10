@@ -7,6 +7,7 @@
  * expired lease and the task resumes from its checkpoint.
  */
 import os from 'node:os';
+import * as Proxmox from '../connectors/proxmox.ts';
 import { insert, json, now, q, tx, uid, update, type Row } from '../core/db.ts';
 import { changed } from '../core/changes.ts';
 import { emit, on } from '../core/bus.ts';
@@ -287,6 +288,16 @@ async function runTask(id: string, fromState: string) {
     clearInterval(hb);
     running.delete(id);
     q.run("UPDATE task_runs SET state = 'ended', ended_at = ?, outcome = ? WHERE id = ?", now(), outcome, runId);
+    // Park dedicated agent VMs only when no other active execution uses the same agent.
+    // Never suspend on WAITING_USER or pending retries: the guest may be needed at resume.
+    const finalTask = q.get('SELECT agent_id, state FROM tasks WHERE id = ?', id);
+    if (Proxmox.isEnabled() && finalTask?.agent_id && TERMINAL.includes(finalTask.state)) {
+      const other = q.get("SELECT COUNT(*) n FROM tasks WHERE agent_id = ? AND id != ? AND state = 'RUNNING'", finalTask.agent_id, id)?.n ?? 0;
+      if (!other) {
+        try { await Proxmox.parkAgentVm(finalTask.agent_id); }
+        catch (e) { log.warn('Could not suspend agent VM', String(e)); }
+      }
+    }
     kick();
   }
 }
