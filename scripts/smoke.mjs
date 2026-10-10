@@ -45,14 +45,13 @@ try {
 
   const b = await api('/api/bootstrap');
   const drv = b.computer.driver;
-  must(drv.shell && drv.os, `driver info: ${JSON.stringify(drv)}`);
-  await api('/api/computer/control', { who: 'human' });
-  const r = await api('/api/computer/terminal', { cmd: 'echo auda-smoke-ok' });
-  must(r.code === 0 && r.stdout.includes('auda-smoke-ok'), `terminal: ${JSON.stringify(r)}`);
-  const fail = await api('/api/computer/terminal', { cmd: 'exit 3' });
-  must(fail.code !== 0, 'a failing command reports a non-zero exit code');
-  await api('/api/computer/control', { who: 'auda' });
-  step(`AUDA's computer runs commands on ${drv.os} through ${drv.shell} (exit codes reported)`);
+  must(drv.driver === 'proxmox', `expected Proxmox-only computer, got: ${JSON.stringify(drv)}`);
+  const attempt = await fetch(BASE + '/api/computer/terminal', {
+    method: 'POST', headers: { 'content-type':'application/json' },
+    body: JSON.stringify({cmd:'echo host-must-not-run'}),
+  });
+  must(attempt.status >= 400, `host command unexpectedly succeeded (HTTP ${attempt.status})`);
+  step('AUDA Computer requires Proxmox: host execution is safely blocked');
 
   console.log('\n  smoke: PASS\n');
 } catch (e) {
