@@ -84,7 +84,7 @@ export async function provision(spec: VmSpec): Promise<AgentVm> {
   const saved = registry()[id]; if (saved) return saved;
   const cores = Math.max(1, Math.min(8, Math.trunc(spec.cores ?? 2)));
   const memory = Math.max(1024, Math.min(16384, Math.trunc(spec.memoryMiB ?? 4096)));
-  const next = await request<{vmid: number} | number>(c, 'GET', '/cluster/nextid');
+  const next = await request<string | number>(c, 'GET', '/cluster/nextid');
   const vmid = Number(next);
   if (!Number.isInteger(vmid) || vmid <= 0) throw new Error('Proxmox returned an invalid VMID');
   // Clone from an existing admin-prepared QEMU template; Proxmox does not install the guest OS.
@@ -92,6 +92,7 @@ export async function provision(spec: VmSpec): Promise<AgentVm> {
     newid: vmid, name: (spec.name ?? `auda-${id}`).replace(/[^a-zA-Z0-9-]/g, '-').slice(0, 60), full: 1,
   });
   await awaitTask(c, c.node, upid);
+  await request(c, 'POST', `/nodes/${encodeURIComponent(c.node)}/qemu/${vmid}/config`, { cores, memory, agent: 1 });
   const vm: AgentVm = { agentId: id, vmid, node: c.node, state: 'provisioned' };
   const r = registry(); r[id] = vm; commit(r);
   // Proxmox cloning can be asynchronous; starting should only occur after task completion.
@@ -100,8 +101,45 @@ export async function provision(spec: VmSpec): Promise<AgentVm> {
 export async function power(agentId: string, action: 'start'|'suspend'|'resume') {
   const c = requireConfig(), id = validAgent(agentId), r = registry(), vm = r[id];
   if (!vm) throw new Error('No VM assigned to this agent');
+  const actual = await request<{status: string; qmpstatus?: string}>(c, 'GET', `/nodes/${encodeURIComponent(vm.node)}/qemu/${vm.vmid}/status/current`);
+  if (action === 'start' && actual.status === 'running') return vm;
+  if (action === 'resume' && actual.status === 'running' && actual.qmpstatus === 'running') return vm;
+  if (action === 'suspend' && actual.qmpstatus === 'paused') return vm;
   const upid = await request<string>(c, 'POST', `/nodes/${encodeURIComponent(vm.node)}/qemu/${vm.vmid}/status/${action}`);
   await awaitTask(c, vm.node, upid);
   vm.state = action === 'suspend' ? 'suspended' : 'running'; commit(r);
   return vm;
 }
+
+/** Execute commands INSIDE the allocated VM through QEMU Guest Agent.
+ * The template must have qemu-guest-agent installed and active. No SSH keys required.
+ */
+export async function guestExec(agentId: string, command: string, timeoutMs = 120_000) {
+  const c = requireConfig(), vm = registry()[validAgent(agentId)];
+  if (!vm) throw new Error('This agent has no allocated Proxmox VM');
+  if (vm.state !== 'running') throw new Error('Agent VM must be running before executing commands');
+  const base = `/nodes/${encodeURIComponent(vm.node)}/qemu/${vm.vmid}/agent`;
+  const started = Date.now();
+  const launch = await request<{pid: number}>(c, 'POST', base + '/exec', { command: '/bin/sh', 'extra-args': JSON.stringify(['-lc', command]) });
+  if (!Number.isInteger(launch.pid)) throw new Error('Guest agent did not return a process ID');
+  while (Date.now() - started < timeoutMs) {
+    const r = await request<{exited: boolean; exitcode?: number; 'out-data'?: string; 'err-data'?: string}>(c, 'GET', base + '/exec-status?pid=' + launch.pid);
+    if (r.exited) return { code: r.exitcode ?? -1, stdout: r['out-data'] ?? '', stderr: r['err-data'] ?? '', durationMs: Date.now() - started, timedOut: false };
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  throw new Error('Guest command exceeded its timeout (the guest process may still be running)');
+}
+export async function ensureAgentVm(agentId: string) {
+  const id = validAgent(agentId);
+  let vm = registry()[id];
+  if (!vm) vm = await provision({ agentId: id });
+  if (vm.state === 'provisioned') await power(id, 'start');
+  else if (vm.state === 'suspended') await power(id, 'resume');
+  return registry()[id];
+}
+export async function parkAgentVm(agentId: string) {
+  const vm = registry()[validAgent(agentId)];
+  if (!vm || vm.state !== 'running') return vm ?? null;
+  return power(agentId, 'suspend');
+}
+export function isEnabled() { return Boolean(cfg()); }
