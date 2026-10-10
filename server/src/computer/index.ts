@@ -13,6 +13,7 @@ import { log } from '../core/log.ts';
 import * as files from './files.ts';
 import * as browser from './browser.ts';
 import * as services from './services.ts';
+import * as Proxmox from '../connectors/proxmox.ts';
 
 export const COMPUTER_ID = 'computer';
 
@@ -20,12 +21,11 @@ export function initComputer() {
   if (!q.get('SELECT id FROM computers WHERE id = ?', COMPUTER_ID)) {
     insert('computers', { id: COMPUTER_ID, name: 'AUDA’s Computer', driver: driverInfo().driver, state: 'ready', controller: 'auda', created_at: now() });
   }
-  services.installDemo();
-  services.start('demo-api');
+  // AUDA Computer is virtualized; do not launch host demo services.
   update('computers', COMPUTER_ID, { state: 'ready', last_health_at: now(), driver: driverInfo().driver });
   registerComputerTools();
   // No browser on this machine? Fetch one in the background now, so it's ready before an agent first needs it.
-  if (!config.chromiumPath && process.env.AUDA_BROWSER_AUTOINSTALL !== '0') {
+  if (false && !config.chromiumPath && process.env.AUDA_BROWSER_AUTOINSTALL !== '0') {
     setTimeout(() => void ensureBrowserBinary().catch((e) => log.warn('browser not ready', String(e))), 5000).unref();
   }
 }
@@ -49,7 +49,7 @@ export function computerView() {
   const row = q.get('SELECT * FROM computers WHERE id = ?', COMPUTER_ID);
   return {
     id: COMPUTER_ID, name: row?.name, state: row?.state, controller: row?.controller ?? 'auda',
-    driver: driverInfo(), browser: browser.status(), services: services.list(),
+    driver: { driver: 'proxmox', label: 'Dedicated Proxmox VM' }, browser: { available: false, running: false }, services: [],
   };
 }
 
@@ -60,32 +60,35 @@ const needsComputer = () => { if (controller() === 'human') throw new HumanHasCo
 function registerComputerTools() {
   const term = async (i: any, c: any) => {
     needsComputer();
-    const r = await terminal.run(i.cmd, { taskId: c.taskId, cwd: i.cwd, timeoutMs: i.timeoutMs, actor: c.actor === 'user' ? 'human' : 'auda' });
+    if (!Proxmox.isEnabled()) throw new Error('Connect Proxmox before using AUDA Computer');
+    const r = await Proxmox.runInVm('auda-computer', String(i.cmd), i.timeoutMs);
     return { code: r.code, stdout: r.stdout, stderr: r.stderr, durationMs: r.durationMs, timedOut: r.timedOut };
   };
   registerTool('terminal.read', term);
   registerTool('terminal.write', term);
   registerTool('terminal.destructive', term);
-  registerTool('fs.read', async (i) => files.read(i.path, i.maxBytes));
-  registerTool('fs.write', async (i) => files.write(i.path, i.content));
+  registerTool('fs.read', async (i) => { if (!Proxmox.isEnabled()) throw new Error('Connect Proxmox'); const text = await Proxmox.guestRead('auda-computer', String(i.path)); return { text, size: Buffer.byteLength(text) }; });
+  registerTool('fs.write', async (i) => { if (!Proxmox.isEnabled()) throw new Error('Connect Proxmox'); return Proxmox.guestWrite('auda-computer', String(i.path), String(i.content)); });
   registerTool('fs.delete', async (i, c) => {
     needsComputer();
+    throw new Error('This operation requires a guest-side implementation; host access is disabled');
     const r = files.remove(i.paths);
     terminal.note(`deleted ${i.paths.length} file(s), freed ${(r.freed / 1048576).toFixed(1)} MB`, c.actor === 'user' ? 'human' : 'auda');
     return r;
   });
   registerTool('fs.compress', async (i, c) => {
     needsComputer();
+    throw new Error('This operation requires a guest-side implementation; host access is disabled');
     const r = await files.gzip(i.paths);
     terminal.note(`compressed ${r.files.length} file(s): ${(r.before / 1048576).toFixed(1)} MB → ${(r.after / 1048576).toFixed(1)} MB`, c.actor === 'user' ? 'human' : 'auda');
     return r;
   });
-  registerTool('service.restart', async (i) => { needsComputer(); terminal.note(`restarting ${i.service}`); return services.restart(i.service); });
-  registerTool('service.configure', async (i) => { needsComputer(); terminal.note(`${i.service}: set ${i.key}=${i.value}`); return services.configure(i.service, i.key, i.value); });
-  registerTool('browser.read', async (i) => { needsComputer(); return browser.readPage(i.url, i.focus); });
+  registerTool('service.restart', async (i) => { throw new Error('Host service management disabled'); needsComputer(); terminal.note(`restarting ${i.service}`); return services.restart(i.service); });
+  registerTool('service.configure', async (i) => { throw new Error('Host service management disabled'); needsComputer(); terminal.note(`${i.service}: set ${i.key}=${i.value}`); return services.configure(i.service, i.key, i.value); });
+  registerTool('browser.read', async (i) => { throw new Error('Host browser disabled; use vm_desktop'); needsComputer(); return browser.readPage(i.url, i.focus); });
   // Agents act with { action, target, value }; the UI's human control sends raw input events.
-  registerTool('browser.interact', async (i) => { needsComputer(); if (i.action) return browser.act(i); await browser.humanInput(i); return { ok: true }; });
-  registerTool('browser.submit', async (i) => { needsComputer(); return browser.act(i); });
+  registerTool('browser.interact', async (i) => { throw new Error('Host browser disabled; use vm_desktop'); needsComputer(); if (i.action) return browser.act(i); await browser.humanInput(i); return { ok: true }; });
+  registerTool('browser.submit', async (i) => { throw new Error('Host browser disabled; use vm_desktop'); needsComputer(); return browser.act(i); });
   registerTool('http.fetch', async (i) => {
     const locale = browser.browserLocale();
     const res = await fetch(i.url, {
