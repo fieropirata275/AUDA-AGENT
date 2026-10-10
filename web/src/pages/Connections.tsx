@@ -211,6 +211,7 @@ function ProxmoxSetup() {
   const [url, setUrl] = useState('');
   const [tokenId, setTokenId] = useState('');
   const [tokenSecret, setTokenSecret] = useState('');
+  const [insecureTls, setInsecureTls] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ connected: boolean; node?: string; template?: number } | null>(null);
   const [error, setError] = useState('');
@@ -218,7 +219,7 @@ function ProxmoxSetup() {
   const connect = async () => {
     setBusy(true); setError('');
     try {
-      const r = await post('/api/proxmox/connect', { url, tokenId, tokenSecret });
+      const r = await post('/api/proxmox/connect', { url, tokenId, tokenSecret, insecureTls });
       setTokenSecret('');
       setResult(r);
     } catch (e) { setError((e as Error).message); }
@@ -236,6 +237,7 @@ function ProxmoxSetup() {
         <input className="input" aria-label="Proxmox URL" placeholder="https://proxmox.example:8006" value={url} onChange={e => setUrl(e.target.value)} />
         <input className="input" aria-label="Proxmox token ID" placeholder="auda@pve!agent" value={tokenId} onChange={e => setTokenId(e.target.value)} />
         <input className="input" aria-label="Proxmox token secret" type="password" autoComplete="off" placeholder="Token secret" value={tokenSecret} onChange={e => setTokenSecret(e.target.value)} />
+        <label className="row small"><input type="checkbox" checked={insecureTls} onChange={e => setInsecureTls(e.target.checked)} /> Local lab: accept self-signed HTTPS certificates (or HTTP). Warning: HTTP exposes your API token on the network.</label>
         <Button variant="primary" busy={busy} disabled={!url || !tokenId || !tokenSecret} onClick={connect}>Connect and verify</Button>
       </div>
     </>}
