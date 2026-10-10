@@ -129,14 +129,14 @@ export function registerTeamRoutes(route: Route, HttpError: HttpErrorCtor) {
   // The provider redirects the browser here; the signed-in user is identified by the one-time state.
   route('GET', '/api/oauth/callback', async (req, res) => {
     const r = await P.finishOAuth(String(req.query.get('state') ?? ''), req.query.get('code'), req.query.get('error_description') ?? req.query.get('error'));
-    const back = r.returnTo && /^\/[^/]/.test(r.returnTo) ? r.returnTo : '/plugins';
+    const back = r.returnTo && /^\/(?!\/|\\)[^\r\n]*$/.test(r.returnTo) ? r.returnTo : '/plugins';
     res.writeHead(r.ok ? 200 : 400, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
     res.end(`<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>${esc(r.plugin)}</title>
 <body style="font:16px system-ui;display:grid;place-items:center;min-height:90vh;margin:0;background:#f4f1ec;color:#222">
 <div style="max-width:420px;padding:28px;border-radius:20px;background:#fff;box-shadow:0 10px 40px #0002;text-align:center">
 <div style="font-size:40px">${r.ok ? '✓' : '!'}</div><h2 style="margin:8px 0">${r.ok ? `${esc(r.plugin)} connected` : 'Not connected'}</h2><p>${esc(r.message)}</p>
 <p><a href="${esc(back)}">Back to AUDA</a></p></div>
-<script>try{window.opener&&window.opener.postMessage({type:'auda-oauth',ok:${r.ok}},'*')}catch(e){}${r.ok ? 'setTimeout(function(){window.opener?window.close():location.href=' + JSON.stringify(back) + '},1200)' : ''}</script>`);
+<script>try{window.opener&&window.opener.postMessage({type:'auda-oauth',ok:${r.ok}},location.origin)}catch(e){}${r.ok ? 'setTimeout(function(){window.opener?window.close():location.href=' + JSON.stringify(back) + '},1200)' : ''}</script>`);
     return undefined;
   }, { open: true });
 

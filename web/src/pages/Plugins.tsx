@@ -20,9 +20,16 @@ function oauthPopup(url: string) {
   return new Promise<boolean>((resolve) => {
     const w = window.open(url, 'auda-oauth', 'width=520,height=720');
     if (!w) { location.assign(url); return; }
-    const onMsg = (e: MessageEvent) => { if (e.data?.type === 'auda-oauth') { cleanup(); resolve(!!e.data.ok); } };
+    // Only AUDA's own callback in this exact popup may complete the OAuth flow.
+    // OAuth providers and unrelated tabs must never spoof a successful sign-in.
+    const onMsg = (e: MessageEvent) => {
+      if (e.origin !== window.location.origin || e.source !== w || e.data?.type !== 'auda-oauth') return;
+      cleanup();
+      resolve(e.data.ok === true);
+    };
     const timer = setInterval(() => { if (w.closed) { cleanup(); resolve(false); } }, 600);
-    const cleanup = () => { window.removeEventListener('message', onMsg); clearInterval(timer); };
+    const timeout = setTimeout(() => { cleanup(); w.close(); resolve(false); }, 5 * 60_000);
+    const cleanup = () => { window.removeEventListener('message', onMsg); clearInterval(timer); clearTimeout(timeout); };
     window.addEventListener('message', onMsg);
   });
 }
