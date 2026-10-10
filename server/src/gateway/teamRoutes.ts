@@ -49,7 +49,7 @@ export function registerTeamRoutes(route: Route, HttpError: HttpErrorCtor) {
   route('POST', '/api/proxmox/connect', (req) => wrap(async () => {
     admin(req);
     const body = req.body ?? {};
-    return Proxmox.connect({ url: String(body.url ?? ''), tokenId: String(body.tokenId ?? ''), tokenSecret: String(body.tokenSecret ?? '') });
+    return Proxmox.connect({ url: String(body.url ?? ''), tokenId: String(body.tokenId ?? ''), tokenSecret: String(body.tokenSecret ?? ''), insecureTls: body.insecureTls === true });
   }));
   route('GET', '/api/proxmox/status', (req) => wrap(() => { admin(req); return Proxmox.status(); }));
   route('POST', '/api/proxmox/vms', (req) => wrap(() => {
