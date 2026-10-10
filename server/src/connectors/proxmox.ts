@@ -59,11 +59,11 @@ export async function connect(input: { url: string; tokenId: string; tokenSecret
     const nodes = await request<Array<{node: string; status: string}>>(c, 'GET', '/nodes');
     const node = nodes.find(n => n.status === 'online')?.node;
     if (!node) throw new Error('No online Proxmox node was found');
-    const resources = await request<Array<{type: string; vmid?: number; node?: string; name?: string; template?: number}>>(c, 'GET', '/cluster/resources?type=vm');
-    const templates = resources.filter(x => x.type === 'qemu' && x.template === 1 && x.node && x.vmid);
+    const resources = await request<Array<{type: string; vmid?: number; node?: string; name?: string; template?: number | string}>>(c, 'GET', '/cluster/resources?type=vm');
+    const templates = resources.filter(x => x.type === 'qemu' && Number(x.template) === 1 && x.node && Number(x.vmid) > 0);
     const first = templates[0];
-    if (!first) throw new Error('No QEMU VM template found. Create a cloud-init template in Proxmox first.');
-    c.node = first.node!; c.template = first.vmid!;
+    if (!first) throw new Error('No visible QEMU template was returned by the Proxmox API. Check the API token VM.Audit permission on /vms and verify template 105 appears in /cluster/resources?type=vm.');
+    c.node = first.node!; c.template = Number(first.vmid);
     setSetting('proxmox.config', c);
     ensureConnector('proxmox', 'Proxmox VE', 'connected', `Connected to ${c.node}`);
     setConnector('proxmox', { state: 'connected', detail: `Ready: ${c.node}, template ${c.template}`, last_ok_at: now() });
