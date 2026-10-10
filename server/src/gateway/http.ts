@@ -286,6 +286,25 @@ route('POST', '/api/computer/browser/hang', () => {
 route('POST', '/api/computer/browser/open', async (req) => { vmOnly(); return Proxmox.guestBrowser(VM_COMPUTER, { action:'open', url: String(req.body?.url ?? 'https://example.com') }); });
 route('POST', '/api/computer/desktop', async (req) => { vmOnly(); requireHuman(); return Proxmox.desktopAction(VM_COMPUTER, req.body?.action, req.body ?? {}); });
 route('GET', '/api/computer/desktop', async () => { vmOnly(); return Proxmox.desktopAction(VM_COMPUTER, 'screenshot'); });
+/** Server-sent desktop frames, all captures originate in the Proxmox guest. */
+route('GET', '/api/computer/desktop/stream', async (_req, res) => {
+  vmOnly();
+  res.writeHead(200, {'content-type':'text/event-stream; charset=utf-8','cache-control':'no-cache, no-transform','connection':'keep-alive','x-accel-buffering':'no'});
+  let closed=false;
+  res.on('close',()=>{closed=true;});
+  while (!closed && !res.writableEnded) {
+    try {
+      const frame=await Proxmox.desktopAction(VM_COMPUTER,'screenshot');
+      if (!closed) res.write('event: frame\\ndata: '+JSON.stringify(frame)+'\\n\\n');
+    } catch(e) {
+      if (!closed) res.write('event: error\\ndata: '+JSON.stringify({message:String((e as Error).message)})+'\\n\\n');
+      break;
+    }
+    await new Promise(resolve=>setTimeout(resolve,1000));
+  }
+  if(!res.writableEnded) res.end();
+  return undefined;
+});
 route('POST', '/api/computer/services/:name/:action', async (req) => {
   vmOnly(); throw new HttpError(501, 'Host services are not accessible from the VM computer');
   const { name, action } = req.params;
