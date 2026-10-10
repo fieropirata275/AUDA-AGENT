@@ -79,7 +79,7 @@ route('GET', '/api/bootstrap', (req) => {
     activity: q.all('SELECT * FROM activity ORDER BY ts DESC LIMIT 250').map(V.activityView),
     artifacts: q.all('SELECT * FROM artifacts ORDER BY created_at DESC LIMIT 200').map(V.artifactView),
     spaces: q.all('SELECT * FROM spaces WHERE archived = 0 ORDER BY created_at'),
-    conversations: q.all('SELECT id, title, channel, space_id AS spaceId, updated_at AS updatedAt FROM conversations ORDER BY updated_at DESC LIMIT 50'),
+    conversations: q.all("SELECT id, title, channel, space_id AS spaceId, user_id AS userId, pinned, updated_at AS updatedAt FROM conversations WHERE id != 'group' ORDER BY pinned DESC, updated_at DESC LIMIT 200"),
     devices: q.all('SELECT * FROM devices ORDER BY created_at DESC').map(V.deviceView),
     schedules: q.all('SELECT * FROM schedules WHERE enabled = 1 ORDER BY next_run_at').map(V.scheduleView),
     settings: V.settingsView(),
@@ -111,6 +111,28 @@ route('POST', '/api/chat', async (req) => {
   const cid = ensureConversation(req.body?.conversationId, req.body?.spaceId ?? null, req.body?.channel ?? 'web');
   const reply = await handleUserMessage(cid, text, req.body?.channel ?? 'web');
   return { conversationId: cid, reply };
+});
+/** Rename or pin a conversation. */
+route('PATCH', '/api/conversations/:id', (req) => {
+  const c = q.get('SELECT id, user_id AS userId FROM conversations WHERE id = ?', req.params.id);
+  if (!c || c.id === 'group' || !V.canSee('conversation', c, req.userId ?? OWNER_ID)) throw new HttpError(404, 'No such conversation');
+  const patch: Record<string, unknown> = {};
+  if (typeof req.body?.title === 'string' && req.body.title.trim()) patch.title = req.body.title.trim().slice(0, 120);
+  if (typeof req.body?.pinned === 'boolean') patch.pinned = req.body.pinned ? 1 : 0;
+  if (Object.keys(patch).length) { update('conversations', c.id, patch); changed('conversation', c.id); }
+  return V.load('conversation', c.id);
+});
+/** Delete a conversation, its messages, and stop any reply still being worked on. */
+route('DELETE', '/api/conversations/:id', (req) => {
+  const c = q.get('SELECT id, user_id AS userId FROM conversations WHERE id = ?', req.params.id);
+  if (!c || c.id === 'group' || !V.canSee('conversation', c, req.userId ?? OWNER_ID)) throw new HttpError(404, 'No such conversation');
+  for (const t of q.all("SELECT id FROM tasks WHERE json_extract(origin_json, '$.conversationId') = ? AND json_extract(origin_json, '$.chatRun') = 1 AND state NOT IN ('COMPLETED','FAILED','CANCELLED')", c.id)) {
+    try { cancelTask(t.id, 'The conversation was deleted'); } catch { /* already finished */ }
+  }
+  q.run('DELETE FROM messages WHERE conversation_id = ?', c.id);
+  q.run('DELETE FROM conversations WHERE id = ?', c.id);
+  changed('conversation', c.id, true);
+  return { ok: true };
 });
 route('GET', '/api/conversations/:id/messages', (req) => !V.canSee('conversation', q.get('SELECT id, user_id AS userId FROM conversations WHERE id = ?', req.params.id), req.userId ?? OWNER_ID) ? [] : q.all('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at', req.params.id).map(V.messageView));
 
@@ -470,7 +492,7 @@ route('POST', '/api/files', async (req) => {
   try { return await saveUpload(req, { name: decodeURIComponent(name), dir: req.query.get('dir') ?? undefined, from: req.query.get('from') ?? undefined }); }
   catch (e) { throw new HttpError(413, (e as Error).message); }
 }, { raw: true });
-route('GET', '/api/computer/download', (req, res) => { vmOnly(); throw new HttpError(501, 'Host file downloads disabled: export from VM instead');
+route('GET', '/api/computer/download', (req, res) => {
   const p = req.query.get('path') ?? '';
   const abs = files.resolveWs(p);
   if (!fs.existsSync(abs) || fs.statSync(abs).isDirectory()) throw new HttpError(404, 'No such file');
