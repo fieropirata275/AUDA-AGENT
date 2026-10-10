@@ -143,3 +143,78 @@ export async function parkAgentVm(agentId: string) {
   return power(agentId, 'suspend');
 }
 export function isEnabled() { return Boolean(cfg()); }
+
+/** Serialized per-agent VM operations. Works across simultaneous task turns in this
+ * process. A database/cluster lease is required before multi-core deployments.
+ */
+const queues = new Map<string, Promise<unknown>>();
+export async function withAgentLock<T>(agentId: string, fn: () => Promise<T>): Promise<T> {
+  const id = validAgent(agentId), previous = queues.get(id) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const current = previous.catch(() => {}).then(() => gate);
+  queues.set(id, current);
+  await previous.catch(() => {});
+  try { return await fn(); }
+  finally { release(); if (queues.get(id) === current) queues.delete(id); }
+}
+export async function runInVm(agentId: string, cmd: string, timeoutMs = 120_000) {
+  return withAgentLock(agentId, async () => {
+    await ensureAgentVm(agentId);
+    return guestExec(agentId, cmd, timeoutMs);
+  });
+}
+export async function parkIfIdle(agentId: string) {
+  return withAgentLock(agentId, async () => {
+    const active = q.get("SELECT COUNT(*) n FROM tasks WHERE agent_id = ? AND state IN ('RUNNING','READY','PLANNING','RECOVERING')", agentId)?.n ?? 0;
+    if (active) return null;
+    return parkAgentVm(agentId);
+  });
+}
+const quote = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'";
+function safePath(p: string) {
+  if (!p || p.startsWith('/') || p.split('/').some(x => x === '..' || x === '') || /[\\\\\x00-\x1f]/.test(p))
+    throw new Error('Guest file path must be relative to the agent home and cannot contain ..');
+  return '/home/auda/' + p.replace(/^\.\//, '');
+}
+export async function guestRead(agentId: string, file: string) {
+  const r = await runInVm(agentId, 'base64 -w0 -- ' + quote(safePath(file)));
+  if (r.code) throw new Error(r.stderr || 'Cannot read file');
+  return Buffer.from(r.stdout.trim(), 'base64').toString('utf8');
+}
+export async function guestWrite(agentId: string, file: string, text: string) {
+  if (Buffer.byteLength(text) > 256 * 1024) throw new Error('Use smaller file chunks (256 KiB max)');
+  const target = safePath(file);
+  const b64 = Buffer.from(text,'utf8').toString('base64');
+  const r = await runInVm(agentId, 'mkdir -p -- ' + quote(target.slice(0,target.lastIndexOf('/'))) + ' && printf %s ' + quote(b64) + ' | base64 -d > ' + quote(target));
+  if (r.code) throw new Error(r.stderr || 'Cannot write file');
+  return { path: file, size: Buffer.byteLength(text) };
+}
+export async function guestList(agentId: string, directory = '.') {
+  const p = directory === '.' ? '/home/auda' : safePath(directory);
+  const r = await runInVm(agentId, 'ls -la -- ' + quote(p));
+  if (r.code) throw new Error(r.stderr);
+  return r.stdout;
+}
+export async function guestSearch(agentId: string, directory: string, pattern: string) {
+  const p = directory === '.' ? '/home/auda' : safePath(directory);
+  const r = await runInVm(agentId, 'grep -rnE -- ' + quote(pattern) + ' ' + quote(p), 60_000);
+  if (r.code > 1) throw new Error(r.stderr);
+  return r.stdout.slice(0,64000);
+}
+/** GUI requires an installed graphical session + xdotool/ImageMagick inside the guest.
+ * The guest owns its display; host input is never forwarded implicitly.
+ */
+export async function desktopAction(agentId: string, action: 'screenshot'|'click'|'type'|'key', data: {x?:number;y?:number;text?:string;key?:string} = {}) {
+  let cmd: string;
+  if (action === 'screenshot') cmd = 'DISPLAY=:0 import -window root png:- | base64 -w0';
+  else if (action === 'click') {
+    const x = Math.trunc(data.x ?? NaN), y = Math.trunc(data.y ?? NaN);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > 10000 || y > 10000) throw new Error('Invalid screen coordinates');
+    cmd = `DISPLAY=:0 xdotool mousemove ${x} ${y} click 1`;
+  } else if (action === 'type') cmd = 'DISPLAY=:0 xdotool type --clearmodifiers -- ' + quote(String(data.text ?? '').slice(0,4000));
+  else cmd = 'DISPLAY=:0 xdotool key -- ' + quote(String(data.key ?? '').slice(0,80));
+  const r = await runInVm(agentId, cmd, 60_000);
+  if (r.code) throw new Error(r.stderr || 'Desktop is unavailable: install a graphical session, xdotool and ImageMagick');
+  return action === 'screenshot' ? { pngBase64: r.stdout.trim() } : { ok: true };
+}
