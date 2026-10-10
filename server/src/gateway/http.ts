@@ -266,10 +266,17 @@ const vmOnly = () => {
   if (!Proxmox.isEnabled()) throw new HttpError(503, 'AUDA Computer requires a connected Proxmox server. Host execution is disabled.');
 };
 route('GET', '/api/computer', async () => {
-  vmOnly();
-  const vm = await Proxmox.ensureAgentVm(VM_COMPUTER);
-  return { ...computerView(), name: 'AUDA’s Computer — Proxmox VM', state: vm.state, driver: { driver: 'proxmox', label: `Proxmox VM ${vm.vmid} on ${vm.node}` },
-    browser: { available: false, running: false, url: 'about:blank' }, services: [], transcript: [] };
+  const connected = Proxmox.isEnabled();
+  const base = { ...computerView(), name: 'AUDA’s Computer — Proxmox VM',
+    driver: { driver: 'proxmox', label: 'Proxmox guest (host disabled)' },
+    browser: { available: connected, running: false, url: 'about:blank' }, services: [], transcript: [] };
+  if (!connected) return { ...base, state: 'not_connected', error: 'This AUDA instance has no saved Proxmox credentials. Check Connections and AUDA_DATA; host fallback is disabled.' };
+  try {
+    const vm = await Proxmox.ensureAgentVm(VM_COMPUTER);
+    return { ...base, state: vm.state, driver: { driver: 'proxmox', label: `Proxmox VM ${vm.vmid} on ${vm.node}` }, error: null };
+  } catch (e) {
+    return { ...base, state: 'provision_error', error: `Proxmox is connected, but AUDA could not initialize its VM: ${(e as Error).message}` };
+  }
 });
 route('GET', '/api/computer/fs', async (req) => {
   vmOnly();
