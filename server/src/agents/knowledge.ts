@@ -23,6 +23,7 @@ import { promisify } from 'node:util';
 import { getSetting, insert, json, now, q, tx, uid, update } from '../core/db.ts';
 import { changed } from '../core/changes.ts';
 import { log } from '../core/log.ts';
+import { zipTexts } from '../office/zip.ts';
 import { modelSettings } from '../models/router.ts';
 import { resolveSecret } from '../secrets/broker.ts';
 import { Permanent } from '../tools/errors.ts';
@@ -47,19 +48,19 @@ export function htmlToText(html: string) {
     .replace(/[ \t]+/g, ' ').replace(/\n\s*\n\s*/g, '\n\n').trim();
 }
 
-/** Extract readable text from a file on disk. PDFs need `pdftotext`; .docx uses `unzip`. */
+/** Extract readable text from a file on disk. PDFs need `pdftotext`; Office files are read in-process. */
 export async function extractFile(abs: string): Promise<string> {
   const ext = path.extname(abs).toLowerCase();
   const stat = fs.statSync(abs);
   if (stat.size > 80 * 1024 * 1024) throw new Permanent('File is larger than 80 MB');
   if (ext === '.pdf') {
     try { return (await run('pdftotext', ['-layout', '-q', abs, '-'], { maxBuffer: 64 << 20, timeout: 120_000 })).stdout; }
-    catch (e: any) { throw new Permanent(e.code === 'ENOENT' ? 'Reading PDFs needs pdftotext (poppler-utils) on AUDA’s computer' : `Couldn't read the PDF: ${e.message}`); }
+    catch (e: any) { throw new Permanent(e.code === 'ENOENT' ? `Reading PDFs needs pdftotext from Poppler on AUDA’s computer (${process.platform === 'win32' ? 'Windows: `winget install oschwartz10612.Poppler` or `choco install poppler`' : process.platform === 'darwin' ? 'macOS: `brew install poppler`' : 'Linux: `apt install poppler-utils`'})` : `Couldn't read the PDF: ${e.message}`); }
   }
   if (ext === '.docx' || ext === '.pptx' || ext === '.odt') {
-    const inner = ext === '.docx' ? 'word/document.xml' : ext === '.odt' ? 'content.xml' : 'ppt/slides/*.xml';
-    try { return htmlToText((await run('unzip', ['-p', abs, inner], { maxBuffer: 64 << 20, timeout: 60_000 })).stdout.replace(/<\/(w:p|a:p|text:p)>/g, '\n')); }
-    catch (e: any) { throw new Permanent(e.code === 'ENOENT' ? 'Reading Office files needs unzip on AUDA’s computer' : `Couldn't read the document: ${e.message}`); }
+    const inner = ext === '.docx' ? /^word\/document\.xml$/ : ext === '.odt' ? /^content\.xml$/ : /^ppt\/slides\/slide\d+\.xml$/;
+    try { return htmlToText((await zipTexts(abs, inner)).map((e) => e.text).join('\n').replace(/<\/(w:p|a:p|text:p)>/g, '\n')); }
+    catch (e: any) { throw new Permanent(`Couldn't read the document: ${e.message}`); }
   }
   const buf = fs.readFileSync(abs);
   if (ext === '.html' || ext === '.htm') return htmlToText(buf.toString('utf8'));

@@ -8,7 +8,9 @@
  */
 import { definePlaybook } from './types.ts';
 import { addWatcher, registerProbe } from '../watchers/runner.ts';
-import { dirSize } from '../computer/files.ts';
+import { dirSize, diskFree, largestFiles, listDir, resolveWs, tailFile } from '../computer/files.ts';
+import { note } from '../computer/terminal.ts';
+import fs from 'node:fs';
 import { status as serviceStatus } from '../computer/services.ts';
 import { q, json } from '../core/db.ts';
 import { createRule } from '../policy/rules.ts';
@@ -16,6 +18,11 @@ import { createRule } from '../policy/rules.ts';
 const MB = 1024 * 1024;
 const fmt = (b: number) => b >= MB ? `${(b / MB).toFixed(1)} MB` : `${Math.round(b / 1024)} KB`;
 const rel = (p: string) => p.replace(/^~\//, '');
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const sizeOf = (p: string) => { try { return dirSize(p); } catch { return 0; } };
+// Measurements run in-process (not through du/find/tail), so they work the same on Linux, macOS and Windows.
+// Each one is noted in AUDA's terminal so the work stays visible.
+const show = (text: string) => { note(text); return { stdout: text }; };
 
 registerProbe('disk', async (c, state) => {
   const used = dirSize(c.path);
@@ -64,8 +71,8 @@ definePlaybook({
     async measure(ctx) {
       const p = rel(ctx.input.path);
       ctx.narrate(`Measuring ${ctx.input.path} against its ${fmt(ctx.input.quotaBytes)} quota.`);
-      const r = await ctx.tool('terminal.exec', { cmd: `du -sb ${p} | cut -f1; du -sh ${p}/logs 2>/dev/null; df -h . | tail -1` });
-      const bytes = Number(r.stdout.split('\n')[0]);
+      const bytes = sizeOf(p), logs = sizeOf(`${p}/logs`), df = diskFree(p);
+      const r = show(`measured ~/${p}: ${fmt(bytes)} (logs ${fmt(logs)})${df ? ` · ${df.text}` : ''}`);
       const pct = Math.round((bytes / ctx.input.quotaBytes) * 100);
       Object.assign(ctx.vars, { before: bytes, beforePct: pct });
       ctx.log('observe', `${ctx.input.path} is at ${pct}% of its quota`, `${fmt(bytes)} used of ${fmt(ctx.input.quotaBytes)}.`, r);
@@ -75,8 +82,8 @@ definePlaybook({
     async largest(ctx) {
       const p = rel(ctx.input.path);
       ctx.narrate('Listing the largest files to see where the space went.');
-      const r = await ctx.tool('terminal.exec', { cmd: `find ${p} -type f -printf '%s %P\\n' | sort -rn | head -40` });
-      const files = r.stdout.trim().split('\n').filter(Boolean).map((l: string) => { const [s, ...n] = l.split(' '); return { size: Number(s), path: n.join(' ') }; });
+      const files = largestFiles(p, 40);
+      show(`largest files in ~/${p}:\n${files.slice(0, 6).map((f) => `${fmt(f.size).padStart(8)}  ${f.path}`).join('\n')}`);
       const rotated = files.filter((f: any) => /^logs\/app\.log\.\d+$/.test(f.path))
         .sort((a: any, b: any) => Number(a.path.split('.').pop()) - Number(b.path.split('.').pop()));
       const rotatedBytes = rotated.reduce((s: number, f: any) => s + f.size, 0);
@@ -89,10 +96,15 @@ definePlaybook({
     async cause(ctx) {
       const p = rel(ctx.input.path);
       ctx.narrate('Sampling growth for a few seconds — size alone doesn’t say whether it’s still growing.');
-      const r = await ctx.tool('terminal.exec', { cmd: `du -sb ${p}/logs | cut -f1; sleep 3; du -sb ${p}/logs | cut -f1; tail -n 2 ${p}/logs/app.log | cut -c1-140; cat ${p}/config.json` });
-      const [a, b] = r.stdout.split('\n').map(Number);
+      const a = sizeOf(`${p}/logs`);
+      await sleep(3000);
+      const b = sizeOf(`${p}/logs`);
+      const tail = tailFile(`${p}/logs/app.log`, 2);
+      let cfg = '';
+      try { cfg = fs.readFileSync(resolveWs(`${p}/config.json`), 'utf8'); } catch { /* no config */ }
+      const r = show(`logs ${fmt(a)} → ${fmt(b)} in 3 s\n${tail}${cfg ? `\n${cfg.trim()}` : ''}`);
       const rate = Math.max(0, (b - a) / 3);
-      const debug = /DEBUG/.test(r.stdout) || /"logLevel":\s*"debug"/.test(r.stdout);
+      const debug = /DEBUG/.test(tail) || /"logLevel":\s*"debug"/.test(cfg);
       const cause = debug ? 'debug logging left on' : rate > 100 * 1024 ? 'unusually high log volume' : 'gradual log accumulation';
       const past = ctx.memories(`${ctx.input.service} disk incident logs`, 5).filter((m) => m.kind === 'episodic');
       const remaining = ctx.input.quotaBytes - b;
@@ -176,8 +188,12 @@ definePlaybook({
     async verify(ctx) {
       const p = rel(ctx.input.path);
       ctx.narrate('Re-measuring to make sure the fix actually worked.');
-      const r = await ctx.tool('terminal.exec', { cmd: `du -sb ${p} | cut -f1; sleep 2; du -sb ${p}/logs | cut -f1; sleep 2; du -sb ${p}/logs | cut -f1` });
-      const [after, l1, l2] = r.stdout.split('\n').map(Number);
+      const after = sizeOf(p);
+      await sleep(2000);
+      const l1 = sizeOf(`${p}/logs`);
+      await sleep(2000);
+      const l2 = sizeOf(`${p}/logs`);
+      const r = show(`re-measured ~/${p}: ${fmt(after)} · logs ${fmt(l1)} → ${fmt(l2)} in 2 s`);
       const pct = Math.round((after / ctx.input.quotaBytes) * 100);
       const rate = Math.max(0, (l2 - l1) / 2);
       Object.assign(ctx.vars, { after, afterPct: pct, afterRate: rate });
@@ -252,7 +268,9 @@ ${(v.files as any[]).map((f) => `- \`${f.path}\` — ${fmt(f.size)}`).join('\n')
     async svc_check(ctx) {
       const s = serviceStatus(ctx.input.service);
       ctx.vars.wasRunning = s.running;
-      const r = await ctx.tool('terminal.exec', { cmd: `tail -n 3 services/${ctx.input.service}/logs/app.log 2>/dev/null | cut -c1-140; ls services/${ctx.input.service}` });
+      let listing = '';
+      try { listing = listDir(resolveWs(`services/${ctx.input.service}`)); } catch { /* missing */ }
+      const r = show(`${tailFile(`services/${ctx.input.service}/logs/app.log`, 3)}\n${listing}`.trim());
       ctx.log('observe', s.running ? `${ctx.input.service} is running again on its own` : `${ctx.input.service} is down`, undefined, r);
       if (s.running) return { complete: `${ctx.input.service} recovered by itself; nothing to do.` };
       return { narration: 'Service process is not running.' };

@@ -6,6 +6,10 @@ import { activity } from '../core/activity.ts';
 import { registerTool } from '../tools/broker.ts';
 import { driverInfo } from './driver.ts';
 import * as terminal from './terminal.ts';
+import { htmlToText } from '../agents/knowledge.ts';
+import { ensureBrowserBinary } from './browser-install.ts';
+import { config } from '../core/config.ts';
+import { log } from '../core/log.ts';
 import * as files from './files.ts';
 import * as browser from './browser.ts';
 import * as services from './services.ts';
@@ -20,6 +24,10 @@ export function initComputer() {
   services.start('demo-api');
   update('computers', COMPUTER_ID, { state: 'ready', last_health_at: now(), driver: driverInfo().driver });
   registerComputerTools();
+  // No browser on this machine? Fetch one in the background now, so it's ready before an agent first needs it.
+  if (!config.chromiumPath && process.env.AUDA_BROWSER_AUTOINSTALL !== '0') {
+    setTimeout(() => void ensureBrowserBinary().catch((e) => log.warn('browser not ready', String(e))), 5000).unref();
+  }
 }
 
 export function controller(): 'auda' | 'human' {
@@ -74,12 +82,21 @@ function registerComputerTools() {
   });
   registerTool('service.restart', async (i) => { needsComputer(); terminal.note(`restarting ${i.service}`); return services.restart(i.service); });
   registerTool('service.configure', async (i) => { needsComputer(); terminal.note(`${i.service}: set ${i.key}=${i.value}`); return services.configure(i.service, i.key, i.value); });
-  registerTool('browser.read', async (i) => { needsComputer(); return browser.readPage(i.url); });
-  registerTool('browser.interact', async (i) => { needsComputer(); await browser.humanInput(i); return { ok: true }; });
+  registerTool('browser.read', async (i) => { needsComputer(); return browser.readPage(i.url, i.focus); });
+  // Agents act with { action, target, value }; the UI's human control sends raw input events.
+  registerTool('browser.interact', async (i) => { needsComputer(); if (i.action) return browser.act(i); await browser.humanInput(i); return { ok: true }; });
+  registerTool('browser.submit', async (i) => { needsComputer(); return browser.act(i); });
   registerTool('http.fetch', async (i) => {
-    const res = await fetch(i.url, { headers: { 'user-agent': 'AUDA/0.1' }, signal: AbortSignal.timeout(20_000) });
-    const text = await res.text();
-    return { status: res.status, text: text.slice(0, 100_000) };
+    const locale = browser.browserLocale();
+    const res = await fetch(i.url, {
+      headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36', accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8', 'accept-language': `${locale},${locale.split('-')[0]};q=0.9,en;q=0.8` },
+      signal: AbortSignal.timeout(20_000), redirect: 'follow',
+    });
+    const raw = await res.text();
+    // HTML is reduced to its readable text: raw markup is mostly scripts and styles, and fills a model's context.
+    const html = /html/i.test(res.headers.get('content-type') ?? '') || /^\s*<(!doctype|html)/i.test(raw);
+    const text = html ? htmlToText(raw) : raw;
+    return { status: res.status, contentType: res.headers.get('content-type'), text: text.slice(0, html ? 20_000 : 60_000), truncated: text.length > (html ? 20_000 : 60_000) };
   });
 }
 

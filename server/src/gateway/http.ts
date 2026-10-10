@@ -523,7 +523,7 @@ export function createServer() {
       if (!fs.existsSync(config.webDist)) { res.writeHead(200, { 'content-type': 'text/plain' }); res.end('AUDA core is running. Build the UI with `npm run build`, or use `npm run dev`.'); return; }
       let file = path.join(config.webDist, path.normalize(url.pathname).replace(/^(\.\.[/\\])+/, ''));
       if (!file.startsWith(config.webDist) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(config.webDist, 'index.html');
-      res.writeHead(200, { 'content-type': MIME[path.extname(file)] ?? 'application/octet-stream', 'cache-control': file.includes('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache' });
+      res.writeHead(200, { 'content-type': MIME[path.extname(file)] ?? 'application/octet-stream', 'cache-control': url.pathname.startsWith('/assets/') && !file.endsWith('index.html') ? 'public, max-age=31536000, immutable' : 'no-cache' });
       fs.createReadStream(file).pipe(res);
     } catch (e) {
       const status = e instanceof HttpError ? e.status : 500;
