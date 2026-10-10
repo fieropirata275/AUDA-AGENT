@@ -265,18 +265,22 @@ const VM_COMPUTER = 'auda-computer';
 const vmOnly = () => {
   if (!Proxmox.isEnabled()) throw new HttpError(503, 'AUDA Computer requires a connected Proxmox server. Host execution is disabled.');
 };
-route('GET', '/api/computer', async () => {
-  const connected = Proxmox.isEnabled();
+route('GET', '/api/computer', () => {
+  // Status must never clone/start a VM: it serves immediately even when Proxmox is offline.
+  const info = Proxmox.computerVmInfo(VM_COMPUTER);
+  const vm = info.vm;
   const base = { ...computerView(), name: 'AUDA’s Computer — Proxmox VM',
-    driver: { driver: 'proxmox', label: 'Proxmox guest (host disabled)' },
-    browser: { available: connected, running: false, url: 'about:blank' }, services: [], transcript: [] };
-  if (!connected) return { ...base, state: 'not_connected', error: 'This AUDA instance has no saved Proxmox credentials. Check Connections and AUDA_DATA; host fallback is disabled.' };
-  try {
-    const vm = await Proxmox.ensureAgentVm(VM_COMPUTER);
-    return { ...base, state: vm.state, driver: { driver: 'proxmox', label: `Proxmox VM ${vm.vmid} on ${vm.node}` }, error: null };
-  } catch (e) {
-    return { ...base, state: 'provision_error', error: `Proxmox is connected, but AUDA could not initialize its VM: ${(e as Error).message}` };
-  }
+    driver: { driver: 'proxmox', label: vm ? `Proxmox VM ${vm.vmid} on ${vm.node}` : 'Proxmox guest (host disabled)' },
+    browser: { available: info.connected, running: false, url: 'about:blank' }, services: [], transcript: [] };
+  if (!info.connected) return { ...base, state: 'not_connected',
+    error: 'This AUDA instance has no saved Proxmox credentials. Check Connections and AUDA_DATA.' };
+  return { ...base, state: vm?.state ?? 'not_provisioned', error: null };
+});
+// The potentially lengthy clone/start operation is explicit, separate from quick status.
+route('POST', '/api/computer/start', async () => {
+  vmOnly();
+  const vm = await Proxmox.withAgentLock(VM_COMPUTER, () => Proxmox.ensureAgentVm(VM_COMPUTER));
+  return { vmid: vm.vmid, node: vm.node, state: vm.state };
 });
 route('GET', '/api/computer/fs', async (req) => {
   vmOnly();
