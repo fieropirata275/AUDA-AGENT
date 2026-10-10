@@ -129,7 +129,7 @@ export function registerTeamRoutes(route: Route, HttpError: HttpErrorCtor) {
   // The provider redirects the browser here; the signed-in user is identified by the one-time state.
   route('GET', '/api/oauth/callback', async (req, res) => {
     const r = await P.finishOAuth(String(req.query.get('state') ?? ''), req.query.get('code'), req.query.get('error_description') ?? req.query.get('error'));
-    const back = r.returnTo && /^\/(?!\/|\\\\)[^\\r\\n]*$/.test(r.returnTo) ? r.returnTo : '/plugins';
+    const back = r.returnTo && /^\/(?!\/|\\)[^\r\n]*$/.test(r.returnTo) ? r.returnTo : '/plugins';
     res.writeHead(r.ok ? 200 : 400, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
     res.end(`<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>${esc(r.plugin)}</title>
 <body style="font:16px system-ui;display:grid;place-items:center;min-height:90vh;margin:0;background:#f4f1ec;color:#222">
