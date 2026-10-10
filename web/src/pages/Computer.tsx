@@ -12,11 +12,19 @@ export function Computer() {
   const [listing, setListing] = useState('');
   const [screen, setScreen] = useState('');
   const [busy, setBusy] = useState(false);
+  const [starting, setStarting] = useState(false);
   const refresh = async () => {
     try { const result = await api<VmView>('/api/computer'); setVm(result); setError(result.error ?? ''); } catch (e) { setError((e as Error).message); }
   };
   useEffect(() => { void refresh(); }, []);
-  useEffect(() => { const stream = new EventSource('/api/computer/desktop/stream'); stream.addEventListener('frame', (ev) => { try { const f = JSON.parse((ev as MessageEvent).data); if (f.pngBase64) setScreen('data:image/png;base64,' + f.pngBase64); } catch {} }); stream.addEventListener('error', () => {}); return () => stream.close(); }, []);
+  const startVm = async () => {
+    if (starting) return;
+    setStarting(true); setError('');
+    try { await post('/api/computer/start'); await refresh(); }
+    catch (e) { setError('Could not start Proxmox VM: ' + (e as Error).message); }
+    finally { setStarting(false); }
+  };
+  useEffect(() => { if (vm?.state !== 'running') return; const stream = new EventSource('/api/computer/desktop/stream'); stream.addEventListener('frame', (ev) => { try { const f = JSON.parse((ev as MessageEvent).data); if (f.pngBase64) setScreen('data:image/png;base64,' + f.pngBase64); } catch {} }); stream.addEventListener('error', () => {}); return () => stream.close(); }, [vm?.state]);
   const take = async (who: 'human'|'auda') => { await post('/api/computer/control', {who}); await refresh(); };
   const command = async (e: React.FormEvent) => {
     e.preventDefault(); if (!cmd.trim()) return;
@@ -41,6 +49,7 @@ export function Computer() {
       <p>Exclusively a dedicated Proxmox VM cloned from your agent template. No host fallback.</p></div>
       <div className="row">
         <Button onClick={() => void refresh()}>Refresh</Button>
+        {vm?.state !== 'running' && vm?.state !== 'not_connected' && <Button variant="primary" busy={starting} disabled={starting} onClick={() => void startVm()}>{starting ? 'Preparing VM…' : 'Start AUDA VM'}</Button>}
         <Button variant="primary" onClick={() => void take(vm?.controller === 'human' ? 'auda' : 'human')}>
           {vm?.controller === 'human' ? 'Return control to AUDA' : 'Take control'}
         </Button>
