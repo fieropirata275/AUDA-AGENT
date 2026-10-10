@@ -75,18 +75,25 @@ export function extractTextToolCalls(text: string, known: Set<string>): { calls:
 
 export interface OAIResult { content: Block[]; stopReason: string; usage: { input: number; output: number }; model: string }
 
-export async function chat(cfg: OAIConfig, a: { system?: string; messages: Msg[]; tools?: any[]; maxTokens?: number; signal?: AbortSignal; temperature?: number }): Promise<OAIResult> {
+export interface JsonSchemaSpec { name: string; schema: Record<string, unknown> }
+
+export async function chat(cfg: OAIConfig, a: { system?: string; messages: Msg[]; tools?: any[]; maxTokens?: number; signal?: AbortSignal; temperature?: number; json?: JsonSchemaSpec }): Promise<OAIResult> {
   const tools = cfg.tools === false ? [] : toOpenAITools(a.tools);
   const body: any = {
     model: cfg.model, messages: toOpenAIMessages(a.system, a.messages), max_tokens: a.maxTokens ?? 4096, stream: false,
     temperature: a.temperature ?? 0.3,
     ...(tools.length ? { tools, tool_choice: 'auto' } : {}),
+    // Structured output (LM Studio and other OpenAI-compatible servers): the reply is constrained to valid JSON.
+    ...(a.json && !tools.length ? { response_format: { type: 'json_schema', json_schema: { name: a.json.name, strict: true, schema: a.json.schema } } } : {}),
   };
   const timeout = AbortSignal.timeout(15 * 60_000); // local models can be slow, but never unbounded
-  const res = await fetch(`${cfg.baseUrl.replace(/\/+$/, '')}/v1/chat/completions`, {
+  const post = (b: any) => fetch(`${cfg.baseUrl.replace(/\/+$/, '')}/v1/chat/completions`, {
     method: 'POST', headers: { 'content-type': 'application/json', ...(cfg.apiKey ? { authorization: `Bearer ${cfg.apiKey}` } : {}) },
-    body: JSON.stringify(body), signal: a.signal ? AbortSignal.any([a.signal, timeout]) : timeout,
+    body: JSON.stringify(b), signal: a.signal ? AbortSignal.any([a.signal, timeout]) : timeout,
   });
+  let res = await post(body);
+  // A server that doesn't support structured output: ask again without it (the prompt still asks for JSON).
+  if (!res.ok && res.status === 400 && body.response_format) { delete body.response_format; res = await post(body); }
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     const err: any = new Error(`Local model HTTP ${res.status}: ${text.slice(0, 300)}`);
@@ -166,4 +173,26 @@ export async function listModels(baseUrl: string, apiKey?: string): Promise<{ fl
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const j: any = await r.json();
   return { flavor: 'openai', api: 'openai', models: (j.data ?? []).map((m: any) => ({ id: m.id, type: /embed/i.test(m.id) ? 'embeddings' : 'llm', state: 'unknown' })) };
+}
+
+/**
+ * The JSON object in a model's reply, however it was wrapped: reasoning in <think> tags, Markdown fences, prose
+ * around it, trailing commas. Throws a clear error when there's none (rather than "Unexpected end of JSON input").
+ */
+export function parseModelJson<T = any>(text: string): T {
+  const clean = (text ?? '').replace(/<think>[\s\S]*?<\/think>/g, '').replace(/^[\s\S]*<\/think>/, '').trim();
+  if (!clean) throw new Error('the model returned an empty reply');
+  const start = clean.indexOf('{');
+  if (start < 0) throw new Error(`the model replied without JSON: “${clean.slice(0, 120)}”`);
+  // The first balanced {...}, so text after the object (or a second object) doesn't break parsing.
+  let depth = 0, inStr = false, esc = false, end = -1;
+  for (let i = start; i < clean.length; i++) {
+    const c = clean[i];
+    if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+    if (c === '"') inStr = true;
+    else if (c === '{') depth++;
+    else if (c === '}' && --depth === 0) { end = i; break; }
+  }
+  const candidate = end > 0 ? clean.slice(start, end + 1) : clean.slice(start);
+  return lenientJson(candidate) as T;
 }

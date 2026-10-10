@@ -5,6 +5,7 @@
 import { config } from './core/config.ts';
 import { db, getSetting, insert, now, q } from './core/db.ts';
 import { log } from './core/log.ts';
+import { repairPointerArtifacts } from './artifacts/store.ts';
 import { initComputer } from './computer/index.ts';
 import { ensureConnector } from './connectors/runtime.ts';
 import { initGitHub } from './connectors/github.ts';
@@ -56,6 +57,7 @@ function firstBoot() {
 const fresh = firstBoot();
 ensureOwner();
 initComputer();
+try { const n = repairPointerArtifacts(); if (n) log.info(`repaired ${n} HTML artifact(s) that held a description instead of the page`); } catch (e) { log.warn('artifact repair skipped', String(e)); }
 ensureConnector('computer', 'AUDA’s Computer', 'connected', `${config.computerDriver} driver · persistent workspace`);
 ensureConnector('webhook', 'Webhooks', 'connected', `${config.publicUrl}/hooks/<name>`);
 ensureConnector('github', 'GitHub', 'disconnected');

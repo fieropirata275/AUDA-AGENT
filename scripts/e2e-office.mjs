@@ -92,6 +92,22 @@ try {
   must(png.subarray(1, 4).toString() === 'PNG', 'chart PNG');
   step('spreadsheet with formulas and a SUM totals row; Word document with headings and table; chart as SVG + PNG');
 
+  // A website built in files and "saved" as a description: the artifact must be the real page, bundled.
+  const { id: siteId } = await api('/api/tasks', { title: 'Build a website', goal: 'Build a modern website', criteria: 'The page is delivered' });
+  let site;
+  for (let i = 0; i < 120; i++) { site = await api(`/api/tasks/${siteId}`); if (['COMPLETED', 'FAILED'].includes(site.state)) break; await sleep(500); }
+  must(site.state === 'COMPLETED', `website task: ${site.state} ${site.diagnosis ?? ''}`);
+  must(site.verification?.verdict === 'pass', `the review ran despite an empty first reply: ${JSON.stringify(site.verification)}`);
+  const siteArts = (await api('/api/bootstrap')).artifacts.filter((a) => a.taskId === siteId);
+  const page = siteArts.find((a) => a.name === 'modern-website.html');
+  must(page, `artifact saved: ${siteArts.map((a) => a.name).join(', ')}`);
+  const pageHtml = await (await raw(page.id)).text();
+  must(/<style>[\s\S]*#f5a524[\s\S]*<\/style>/.test(pageHtml) && /<script>[\s\S]*dataset\.ready/.test(pageHtml) && /src="data:image\/svg\+xml;base64,/.test(pageHtml) && /url\("data:image\/svg/.test(pageHtml), `the page is bundled with its CSS, JS and images: ${pageHtml.slice(0, 300)}`);
+  must(!/View at:/.test(pageHtml), 'the description was not saved as the page');
+  must(siteArts.some((a) => a.name === 'README.md') && !siteArts.some((a) => a.name === 'style.css' || a.name === 'app.js'), `written files delivered, inlined assets not duplicated: ${siteArts.map((a) => a.name).join(', ')}`);
+  must(/Files: /.test(site.result), `the answer lists the delivered files: ${site.result}`);
+  step(`website: a description pointing at ~/…/site/index.html became the real page (CSS, JS and images inlined); README.md delivered on finish; review recovered from an empty reply (${site.verification.verdict})`);
+
   console.log('\n  office work (research, PDF, slides, Word, Excel, charts): PASS\n');
 } catch (e) {
   failed = true;

@@ -8,7 +8,7 @@ import { emit } from '../core/bus.ts';
 import { activity } from '../core/activity.ts';
 import type { CompiledRule } from './engine.ts';
 import { capabilities } from './capabilities.ts';
-import { complete, hasReasoningModel } from '../models/router.ts';
+import { completeJson, hasReasoningModel } from '../models/router.ts';
 
 interface Compiled { compiled: CompiledRule; interpretation: string }
 
@@ -90,12 +90,12 @@ export async function compileRule(text: string): Promise<Compiled | null> {
   if (hasReasoningModel()) {
     try {
       const capList = Object.values(capabilities).map((c) => `${c.id} (${c.title}; risk ${c.risk})`).join('\n');
-      const r = await complete({
-        role: 'utility', purpose: 'rule compilation', maxTokens: 800,
+      const j = await completeJson<any>({
+        role: 'utility', purpose: 'rule compilation', maxTokens: 1500,
+        json: { name: 'rule', schema: { type: 'object', properties: { effect: { type: 'string', enum: ['allow', 'deny', 'ask', 'quiet', 'budget'] }, capabilities: { type: 'array', items: { type: 'string' } }, resource: { type: 'string' }, resourceNot: { type: 'string' }, hours: { type: 'object', properties: { from: { type: 'number' }, to: { type: 'number' } } }, maxPerDay: { type: 'number' }, levels: { type: 'array', items: { type: 'string' } }, dailyBudget: { type: 'number' }, interpretation: { type: 'string' } }, required: ['effect', 'capabilities', 'interpretation'] } },
         system: 'You compile a user\'s natural-language rule for an autonomous operator into JSON policy. Respond with JSON only: {"effect":"allow|deny|ask|quiet|budget","capabilities":[ids or "risk:<risk>"],"resource"?:glob,"resourceNot"?:glob,"hours"?:{"from":h,"to":h},"maxPerDay"?:n,"levels"?:[notification levels fyi|completed|attention|watching],"dailyBudget"?:number,"interpretation":"one or two plain sentences restating exactly what will and won\'t happen"}. Be conservative: if unsure between allow and ask, choose ask.',
         prompt: `Capabilities:\n${capList}\n\nRule: ${text}`,
       });
-      const j = JSON.parse(r.text.slice(r.text.indexOf('{'), r.text.lastIndexOf('}') + 1));
       const { interpretation, ...compiled } = j;
       if (compiled.effect && Array.isArray(compiled.capabilities)) return { compiled, interpretation };
     } catch { /* fall back to the built-in compiler */ }
