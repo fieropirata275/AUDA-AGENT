@@ -15,6 +15,7 @@
  *    validated, and web content is marked untrusted.
  */
 import fs from 'node:fs';
+import * as Proxmox from '../connectors/proxmox.ts';
 import path from 'node:path';
 import type Anthropic from '@anthropic-ai/sdk';
 import { definePlaybook, type StepCtx } from './types.ts';
@@ -203,7 +204,14 @@ async function runTool(ctx: StepCtx, ws: string, name: string, input: any, plugi
     case 'terminal': {
       ctx.narrate(input.why);
       const timeoutMs = Math.min(900, Math.max(5, Number(input.timeout_sec ?? 120))) * 1000;
-      const r = await ctx.tool('terminal.exec', { cmd: input.cmd, cwd: ws, timeoutMs }, { why: input.why });
+      // Named agents receive a dedicated persistent Proxmox VM if the integration is enabled.
+      // Anonymous tasks continue using AUDA's regular computer.
+      const r = ctx.task.agent_id && Proxmox.isEnabled()
+        ? await (async () => {
+            await Proxmox.ensureAgentVm(ctx.task.agent_id);
+            return Proxmox.guestExec(ctx.task.agent_id, String(input.cmd), timeoutMs);
+          })()
+        : await ctx.tool('terminal.exec', { cmd: input.cmd, cwd: ws, timeoutMs }, { why: input.why });
       return `exit ${r.code}${r.timedOut ? ' (timed out)' : ''} · ${r.durationMs} ms\n--- stdout ---\n${r.stdout}${r.stderr ? `\n--- stderr ---\n${r.stderr}` : ''}`;
     }
     case 'read_file': {
