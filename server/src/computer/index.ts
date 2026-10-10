@@ -85,10 +85,10 @@ function registerComputerTools() {
   });
   registerTool('service.restart', async (i) => { throw new Error('Host service management disabled'); needsComputer(); terminal.note(`restarting ${i.service}`); return services.restart(i.service); });
   registerTool('service.configure', async (i) => { throw new Error('Host service management disabled'); needsComputer(); terminal.note(`${i.service}: set ${i.key}=${i.value}`); return services.configure(i.service, i.key, i.value); });
-  registerTool('browser.read', async (i) => { throw new Error('Host browser disabled; use vm_desktop'); needsComputer(); return browser.readPage(i.url, i.focus); });
+  registerTool('browser.read', async (i) => { needsComputer(); if (!Proxmox.isEnabled()) throw new Error('Connect Proxmox'); return Proxmox.guestBrowser('auda-computer', {action:'read', url:i.url}); });
   // Agents act with { action, target, value }; the UI's human control sends raw input events.
-  registerTool('browser.interact', async (i) => { throw new Error('Host browser disabled; use vm_desktop'); needsComputer(); if (i.action) return browser.act(i); await browser.humanInput(i); return { ok: true }; });
-  registerTool('browser.submit', async (i) => { throw new Error('Host browser disabled; use vm_desktop'); needsComputer(); return browser.act(i); });
+  registerTool('browser.interact', async (i) => { needsComputer(); if (!Proxmox.isEnabled()) throw new Error('Connect Proxmox'); return Proxmox.guestBrowser('auda-computer', { action: i.action === 'type' ? 'type' : i.action === 'press' ? 'press' : i.action === 'scroll' ? 'scroll' : 'click', target:i.target, value:i.value, x:i.x, y:i.y }); });
+  registerTool('browser.submit', async (i) => { needsComputer(); if (!Proxmox.isEnabled()) throw new Error('Connect Proxmox'); return Proxmox.guestBrowser('auda-computer', {action: 'press', value: i.value ?? 'Return'}); });
   registerTool('http.fetch', async (i) => {
     const locale = browser.browserLocale();
     const res = await fetch(i.url, {
