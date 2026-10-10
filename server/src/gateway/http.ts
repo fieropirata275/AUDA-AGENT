@@ -283,7 +283,7 @@ route('POST', '/api/computer/browser/hang', () => {
   if (ok) activity('user', 'You froze AUDA’s browser to test recovery', { detail: 'The supervisor should notice within ~10 seconds.' });
   return { ok };
 });
-route('POST', '/api/computer/browser/open', async () => { vmOnly(); throw new HttpError(501, 'Host browser is disabled'); });
+route('POST', '/api/computer/browser/open', async (req) => { vmOnly(); return Proxmox.guestBrowser(VM_COMPUTER, { action:'open', url: String(req.body?.url ?? 'https://example.com') }); });
 route('POST', '/api/computer/desktop', async (req) => { vmOnly(); requireHuman(); return Proxmox.desktopAction(VM_COMPUTER, req.body?.action, req.body ?? {}); });
 route('GET', '/api/computer/desktop', async () => { vmOnly(); return Proxmox.desktopAction(VM_COMPUTER, 'screenshot'); });
 route('POST', '/api/computer/services/:name/:action', async (req) => {
