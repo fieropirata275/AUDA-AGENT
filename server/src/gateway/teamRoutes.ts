@@ -8,6 +8,7 @@ import { activity } from '../core/activity.ts';
 import { config } from '../core/config.ts';
 import * as Org from '../org/users.ts';
 import * as P from '../plugins/runtime.ts';
+import * as Proxmox from '../connectors/proxmox.ts';
 import { PRESETS } from '../plugins/presets.ts';
 import * as A from '../agents/agents.ts';
 import * as K from '../agents/knowledge.ts';
@@ -43,6 +44,23 @@ export function registerTeamRoutes(route: Route, HttpError: HttpErrorCtor) {
     try { return await fn(); } catch (e) { if (e instanceof HttpError) throw e; throw new HttpError(status, (e as Error).message); }
   };
   const admin = (req: Req) => { if (!Org.isAdmin(uid(req))) throw new HttpError(403, 'Only owners and admins can do that'); };
+
+  // Two-step Proxmox setup: (1) integrate with URL + scoped token; (2) confirm live connection.
+  route('POST', '/api/proxmox/connect', (req) => wrap(async () => {
+    admin(req);
+    const body = req.body ?? {};
+    return Proxmox.connect({ url: String(body.url ?? ''), tokenId: String(body.tokenId ?? ''), tokenSecret: String(body.tokenSecret ?? '') });
+  }));
+  route('GET', '/api/proxmox/status', (req) => wrap(() => { admin(req); return Proxmox.status(); }));
+  route('POST', '/api/proxmox/vms', (req) => wrap(() => {
+    admin(req);
+    return Proxmox.provision({ agentId: String(req.body?.agentId ?? ''), cores: req.body?.cores, memoryMiB: req.body?.memoryMiB });
+  }));
+  route('POST', '/api/proxmox/vms/:agentId/:action', (req) => wrap(() => {
+    admin(req);
+    if (!['start', 'suspend', 'resume'].includes(req.params.action)) throw new HttpError(400, 'Invalid VM action');
+    return Proxmox.power(req.params.agentId, req.params.action as 'start' | 'suspend' | 'resume');
+  }));
 
   // ─── accounts ──────────────────────────────────────────────────────────────
 

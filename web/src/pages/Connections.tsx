@@ -1,5 +1,5 @@
 /** Connections are pieces of AUDA's environment, each with explicit permissions. */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useStore } from '../lib/store';
 import { api, post } from '../lib/api';
@@ -207,6 +207,42 @@ function Devices() {
   );
 }
 
+function ProxmoxSetup() {
+  const [url, setUrl] = useState('');
+  const [tokenId, setTokenId] = useState('');
+  const [tokenSecret, setTokenSecret] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ connected: boolean; node?: string; template?: number } | null>(null);
+  const [error, setError] = useState('');
+  useEffect(() => { let alive = true; api('/api/proxmox/status').then(r => { if (alive && r.connected) setResult(r); }).catch(() => {}); return () => { alive = false; }; }, []);
+  const connect = async () => {
+    setBusy(true); setError('');
+    try {
+      const r = await post('/api/proxmox/connect', { url, tokenId, tokenSecret });
+      setTokenSecret('');
+      setResult(r);
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  };
+  return <div className="conn" style={{ padding: 18 }}>
+    <h3>Proxmox — agent computers</h3>
+    {result?.connected ? <div role="status">
+      <strong>Step 2/2 · Connection confirmed</strong>
+      <p>Connected to {result.node}; VM template {result.template} detected. AUDA can use approved VM operations.</p>
+    </div> : <>
+      <strong>Step 1/2 · Integrate</strong>
+      <p className="small muted">Enter your Proxmox HTTPS address and a dedicated, least-privilege API token. A QEMU VM template must already exist.</p>
+      <div className="stack" style={{ gap: 8 }}>
+        <input className="input" aria-label="Proxmox URL" placeholder="https://proxmox.example:8006" value={url} onChange={e => setUrl(e.target.value)} />
+        <input className="input" aria-label="Proxmox token ID" placeholder="auda@pve!agent" value={tokenId} onChange={e => setTokenId(e.target.value)} />
+        <input className="input" aria-label="Proxmox token secret" type="password" autoComplete="off" placeholder="Token secret" value={tokenSecret} onChange={e => setTokenSecret(e.target.value)} />
+        <Button variant="primary" busy={busy} disabled={!url || !tokenId || !tokenSecret} onClick={connect}>Connect and verify</Button>
+      </div>
+    </>}
+    {error && <p role="alert" className="small" style={{ color: 'var(--attention)' }}>{error}</p>}
+  </div>;
+}
+
 export function Connections() {
   const s = useStore();
   const available = s.catalog.filter((c) => c.available && c.kind !== 'device');
@@ -214,7 +250,8 @@ export function Connections() {
   return (
     <div>
       <div className="page-head"><div><h1 className="title-lg">Connections</h1><p>The services, machines and accounts that make up AUDA’s environment — and exactly what it may do with each.</p></div></div>
-      <div className="grid-2">{available.map((cat) => cat.kind === 'lmstudio' ? <LmStudioCard key={cat.kind} c={s.connectors.lmstudio} /> : <ConnectorCard key={cat.kind} cat={cat} c={s.connectors[cat.kind]} />)}</div>
+      <div className="grid-2">{available.filter((cat) => cat.kind !== 'proxmox').map((cat) => cat.kind === 'lmstudio' ? <LmStudioCard key={cat.kind} c={s.connectors.lmstudio} /> : <ConnectorCard key={cat.kind} cat={cat} c={s.connectors[cat.kind]} />)}</div>
+      <section className="section"><ProxmoxSetup /></section>
       <section className="section">
         <div className="section-head"><h2>Phones &amp; tablets</h2><span className="faint small">The AUDA app: chat, team, supervision. Pair once, revoke any time.</span></div>
         <Phones />

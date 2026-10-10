@@ -15,6 +15,7 @@
  *    validated, and web content is marked untrusted.
  */
 import fs from 'node:fs';
+import * as Proxmox from '../connectors/proxmox.ts';
 import path from 'node:path';
 import type Anthropic from '@anthropic-ai/sdk';
 import { definePlaybook, type StepCtx } from './types.ts';
@@ -64,6 +65,7 @@ const BASE_TOOLS: ToolDef[] = [
   T('narrate', 'Tell the user in one short sentence what you are doing now and why (operational reasoning, not private thoughts).', { text: { type: 'string' } }, ['text']),
   T('update_plan', 'Publish or update your plan as a short list of concrete steps. The user sees it live; keep statuses honest.', { steps: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, status: { type: 'string', enum: ['pending', 'doing', 'done', 'skipped'] } }, required: ['title', 'status'] } } }, ['steps']),
   T('terminal', `${terminalIntro()} The working directory is this task’s workspace. Read-only commands run freely; commands that change or delete things are checked against the user’s rules and may pause for approval. Use timeout_sec for builds and tests.`, { cmd: { type: 'string' }, why: { type: 'string', description: 'One sentence the user will see.' }, timeout_sec: { type: 'number', description: 'Default 120, max 900.' } }, ['cmd', 'why']),
+  T('vm_desktop', 'Interact with your dedicated Proxmox VM desktop. Requires an active X11 desktop with ImageMagick and xdotool. Screenshot returns a file artifact, not a visual analysis.', { action: { type: 'string', enum: ['screenshot','click','type','key'] }, x: { type: 'number' }, y: { type: 'number' }, text: { type: 'string' }, key: { type: 'string' } }, ['action']),
   T('read_file', 'Read a text file. Paths are relative to your workspace, or start with ~/ for your home. Use offset/limit (characters) for large files.', { path: { type: 'string' }, offset: { type: 'number' }, limit: { type: 'number' } }, ['path']),
   T('write_file', 'Create or overwrite a text file (relative to your workspace, or ~/...).', { path: { type: 'string' }, content: { type: 'string' } }, ['path', 'content']),
   T('edit_file', 'Replace one exact, unique occurrence of old_text with new_text in a file. Fails if old_text is missing or appears more than once — then add more surrounding context.', { path: { type: 'string' }, old_text: { type: 'string' }, new_text: { type: 'string' } }, ['path', 'old_text', 'new_text']),
@@ -203,35 +205,50 @@ async function runTool(ctx: StepCtx, ws: string, name: string, input: any, plugi
     case 'terminal': {
       ctx.narrate(input.why);
       const timeoutMs = Math.min(900, Math.max(5, Number(input.timeout_sec ?? 120))) * 1000;
-      const r = await ctx.tool('terminal.exec', { cmd: input.cmd, cwd: ws, timeoutMs }, { why: input.why });
+      // Named agents receive a dedicated persistent Proxmox VM if the integration is enabled.
+      // Anonymous tasks continue using AUDA's regular computer.
+      const r = ctx.task.agent_id && Proxmox.isEnabled()
+        ? await (async () => {
+            return Proxmox.runInVm(ctx.task.agent_id, String(input.cmd), timeoutMs);
+          })()
+        : await ctx.tool('terminal.exec', { cmd: input.cmd, cwd: ws, timeoutMs }, { why: input.why });
       return `exit ${r.code}${r.timedOut ? ' (timed out)' : ''} · ${r.durationMs} ms\n--- stdout ---\n${r.stdout}${r.stderr ? `\n--- stderr ---\n${r.stderr}` : ''}`;
+    }
+    case 'vm_desktop': {
+      if (!ctx.task.agent_id || !Proxmox.isEnabled()) throw new Permanent('This task has no dedicated Proxmox VM');
+      const r = await Proxmox.desktopAction(ctx.task.agent_id, input.action, input);
+      if (input.action !== 'screenshot') return 'Desktop action completed';
+      const raw = Buffer.from(r.pngBase64 ?? '', 'base64');
+      const a = await ctx.artifact('vm-desktop.png', raw, { why: 'Screenshot of the agent VM desktop' });
+      return `Desktop screenshot saved at ${a.path}. Open the artifact to inspect it.`;
     }
     case 'read_file': {
       const abs = resolvePath(ws, input.path);
-      const r = await ctx.tool('fs.read', { path: display(abs), maxBytes: 2_000_000 });
+      const r = ctx.task.agent_id && Proxmox.isEnabled() ? { text: await Proxmox.guestRead(ctx.task.agent_id, String(input.path)), size: 0 } : await ctx.tool('fs.read', { path: display(abs), maxBytes: 2_000_000 });
       const off = Math.max(0, Number(input.offset ?? 0)), lim = Math.min(40_000, Number(input.limit ?? 40_000));
       const slice = r.text.slice(off, off + lim);
       return `${display(abs)} · ${r.size.toLocaleString()} bytes${off || slice.length < r.text.length ? ` · showing ${off}–${off + slice.length}` : ''}\n${slice}`;
     }
     case 'write_file': {
       const abs = resolvePath(ws, input.path);
-      const r = await ctx.tool('fs.write', { path: display(abs), content: input.content });
+      const r = ctx.task.agent_id && Proxmox.isEnabled() ? await Proxmox.guestWrite(ctx.task.agent_id, String(input.path), String(input.content)) : await ctx.tool('fs.write', { path: display(abs), content: input.content });
       noteWritten(ctx, abs);
       return `wrote ${r.path} (${r.size} bytes)`;
     }
     case 'edit_file': {
       const abs = resolvePath(ws, input.path);
-      const cur = (await ctx.tool('fs.read', { path: display(abs), maxBytes: 5_000_000 })).text as string;
+      const cur = ctx.task.agent_id && Proxmox.isEnabled() ? await Proxmox.guestRead(ctx.task.agent_id, String(input.path)) : (await ctx.tool('fs.read', { path: display(abs), maxBytes: 5_000_000 })).text as string;
       const n = cur.split(input.old_text).length - 1;
       if (n === 0) throw new Permanent(`old_text not found in ${display(abs)}`);
       if (n > 1) throw new Permanent(`old_text appears ${n} times in ${display(abs)}; include more context so it is unique`);
-      await ctx.tool('fs.write', { path: display(abs), content: cur.replace(input.old_text, () => input.new_text) });
+      if (ctx.task.agent_id && Proxmox.isEnabled()) await Proxmox.guestWrite(ctx.task.agent_id, String(input.path), cur.replace(input.old_text, () => input.new_text));
+      else await ctx.tool('fs.write', { path: display(abs), content: cur.replace(input.old_text, () => input.new_text) });
       noteWritten(ctx, abs);
       return `edited ${display(abs)}`;
     }
     // Listing and searching are done in-process, so they behave the same on Linux, macOS and Windows.
-    case 'list_files': return listDir(resolvePath(ws, input.path || '.'));
-    case 'search_files': return searchFiles(resolvePath(ws, input.path || '.'), String(input.pattern ?? ''));
+    case 'list_files': return ctx.task.agent_id && Proxmox.isEnabled() ? Proxmox.guestList(ctx.task.agent_id, String(input.path || '.')) : listDir(resolvePath(ws, input.path || '.'));
+    case 'search_files': return ctx.task.agent_id && Proxmox.isEnabled() ? Proxmox.guestSearch(ctx.task.agent_id, String(input.path || '.'), String(input.pattern ?? '')) : searchFiles(resolvePath(ws, input.path || '.'), String(input.pattern ?? ''));
     case 'browse': { const p = await ctx.tool('browser.read', { url: input.url, focus: input.focus }); return untrusted(p.url, pageForModel(p)); }
     case 'browser_act': {
       const a = { action: input.action, target: input.target, value: input.value, submit: input.submit, focus: input.focus };
@@ -244,7 +261,9 @@ async function runTool(ctx: StepCtx, ws: string, name: string, input: any, plugi
       // deliver the file itself, not the description.
       const src = input.path ? resolvePath(ws, input.path) : pointedFile(ws, String(input.content ?? ''), String(input.name ?? ''));
       if (!src && !input.content) throw new Permanent('Give save_artifact either path (a file you wrote) or content (the complete file)');
-      const body = src ? deliverableBody(src) : { content: input.content as string, inlined: [] as string[] };
+      const remotePath = ctx.task.agent_id && Proxmox.isEnabled() && input.path ? String(input.path) : null;
+      const body = remotePath ? { content: await Proxmox.guestRead(ctx.task.agent_id, remotePath), inlined: [] as string[] }
+        : src ? deliverableBody(src) : { content: input.content as string, inlined: [] as string[] };
       const a = await ctx.artifact(input.name, body.content, { why: input.why });
       markDelivered(ctx, src, body.inlined);
       ctx.log('act', `Saved ${input.name}`, `${input.why}${src ? `\nFrom ${display(src)}${body.inlined.length ? ` (with ${body.inlined.length} linked file${body.inlined.length > 1 ? 's' : ''} inlined)` : ''}` : ''}`);
